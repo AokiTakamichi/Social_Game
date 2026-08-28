@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-DEFAULT_EXCEL_CANDIDATES = (
-    "Team2_確率(1).xlsx",
-    "Team2_確率 (1).xlsx",
-    "Team2_確率.xlsx",
-)
+DEFAULT_EXCEL_FILENAME = "Team2_確率 (1).xlsx"
 
 DEFAULT_TRIALS = 10_000
 DEFAULT_MAX_TURNS = 15

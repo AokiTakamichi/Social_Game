@@ -28,9 +28,10 @@ def main() -> None:
     st.title("城建築モンテカルロシミュレーター")
 
     base_dir = Path(__file__).parent
-    excel_path = find_excel_file(base_dir)
-    if excel_path is None:
-        st.error("プロジェクト内に .xlsx ファイルが見つかりません。")
+    try:
+        excel_path = find_excel_file(base_dir)
+    except FileNotFoundError as error:
+        st.error(str(error))
         st.stop()
 
     jobs, rest_events, warnings = load_game_data(excel_path)

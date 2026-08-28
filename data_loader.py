@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from zipfile import ZipFile
 
-from config import DEFAULT_EXCEL_CANDIDATES, DEFAULT_REST_EVENTS
+from config import DEFAULT_EXCEL_FILENAME, DEFAULT_REST_EVENTS
 from models import Action, Job
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -13,13 +13,11 @@ REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 NS = {"main": MAIN_NS}
 
 
-def find_excel_file(base_dir: Path) -> Path | None:
-    for name in DEFAULT_EXCEL_CANDIDATES:
-        candidate = base_dir / name
-        if candidate.exists():
-            return candidate
-    files = sorted(base_dir.glob("*.xlsx"))
-    return files[0] if files else None
+def find_excel_file(base_dir: Path) -> Path:
+    candidate = base_dir / DEFAULT_EXCEL_FILENAME
+    if not candidate.exists():
+        raise FileNotFoundError(f"{DEFAULT_EXCEL_FILENAME} が見つかりません")
+    return candidate
 
 
 def load_game_data(path: Path) -> tuple[dict[str, Job], dict[str, dict], list[str]]:
