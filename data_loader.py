@@ -120,6 +120,9 @@ def _parse_action(job: str, row: list[object]) -> Action | None:
         delay_multiplier = 3.0
     elif effect and _to_int(effect, 0) > 0 and not any(token in effect for token in ("体力", "建築費")):
         amount = _to_int(effect, 0)
+    elif "建築費" in effect and "半分" in effect:
+        effect_type = "build_cost_multiplier"
+        multiplier = 0.5
     elif "建築費" in effect:
         effect_type = "unsupported"
         notes = f"特殊効果「{effect}」は対象指定がないため収入0の未対応効果として扱います。"

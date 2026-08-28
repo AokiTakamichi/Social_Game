@@ -10,11 +10,17 @@ from config import (
     DEFAULT_BUILD_SUCCESS_RATE,
     DEFAULT_CASTLE_COSTS,
     DEFAULT_ADVANCED_GUARD_BUILD_BONUS,
+    DEFAULT_ADVANCED_CARPENTER_BUILD_DISCOUNT,
+    DEFAULT_ADVANCED_MERCHANT_TURN_INCOME,
+    DEFAULT_CARPENTER_BUILD_COST_MULTIPLIER,
     DEFAULT_INITIAL_STAMINA,
     DEFAULT_KNIGHT_STAMINA_BONUS,
     DEFAULT_MAX_STAMINA,
     DEFAULT_MAX_TURNS,
+    DEFAULT_NORMAL_CARPENTER_BUILD_DISCOUNT,
     DEFAULT_NORMAL_GUARD_BUILD_BONUS,
+    DEFAULT_NORMAL_MERCHANT_TURN_INCOME,
+    DEFAULT_NORMAL_NEET_TURN_RECOVERY,
     DEFAULT_PLAYER_COUNT,
     DEFAULT_TRIALS,
 )
@@ -50,6 +56,7 @@ def main() -> None:
     sim_settings = render_simulation_settings(jobs)
     castle_settings = render_castle_settings()
     stamina_settings = render_stamina_settings()
+    passive_settings = render_passive_settings()
     edited_jobs = render_job_settings(jobs)
     edited_rest_events = render_rest_settings(rest_events)
 
@@ -63,6 +70,12 @@ def main() -> None:
             build_failure_loss_rate=castle_settings["failure_loss_rate"],
             normal_guard_build_bonus=castle_settings["normal_guard_build_bonus"],
             advanced_guard_build_bonus=castle_settings["advanced_guard_build_bonus"],
+            normal_carpenter_build_discount=passive_settings["normal_carpenter_build_discount"],
+            advanced_carpenter_build_discount=passive_settings["advanced_carpenter_build_discount"],
+            carpenter_build_cost_multiplier=passive_settings["carpenter_build_cost_multiplier"],
+            normal_merchant_turn_income=passive_settings["normal_merchant_turn_income"],
+            advanced_merchant_turn_income=passive_settings["advanced_merchant_turn_income"],
+            normal_neet_turn_recovery=passive_settings["normal_neet_turn_recovery"],
             initial_stamina=stamina_settings["initial"],
             base_max_stamina=stamina_settings["maximum"],
             knight_stamina_bonus=stamina_settings["knight_bonus"],
@@ -164,8 +177,30 @@ def render_stamina_settings() -> dict:
     return {"initial": int(initial), "maximum": int(maximum), "knight_bonus": int(knight_bonus)}
 
 
+def render_passive_settings() -> dict:
+    st.header("4. パッシブ設定")
+    col1, col2, col3 = st.columns(3)
+    normal_carpenter = col1.number_input("通常大工 パッシブ建築費減額", min_value=0, value=DEFAULT_NORMAL_CARPENTER_BUILD_DISCOUNT, step=10_000)
+    advanced_carpenter = col2.number_input("上級大工 パッシブ建築費減額", min_value=0, value=DEFAULT_ADVANCED_CARPENTER_BUILD_DISCOUNT, step=10_000)
+    carpenter_multiplier = col3.number_input("大工 建築費半減行動の倍率", min_value=0.0, max_value=1.0, value=DEFAULT_CARPENTER_BUILD_COST_MULTIPLIER, step=0.05, format="%.4f")
+
+    col4, col5, col6 = st.columns(3)
+    normal_merchant = col4.number_input("通常商人 ターン開始収入", min_value=0, value=DEFAULT_NORMAL_MERCHANT_TURN_INCOME, step=1_000)
+    advanced_merchant = col5.number_input("上級商人 ターン開始収入", min_value=0, value=DEFAULT_ADVANCED_MERCHANT_TURN_INCOME, step=1_000)
+    normal_neet = col6.number_input("通常ニート ターン開始回復", min_value=0, value=DEFAULT_NORMAL_NEET_TURN_RECOVERY, step=1)
+
+    return {
+        "normal_carpenter_build_discount": int(normal_carpenter),
+        "advanced_carpenter_build_discount": int(advanced_carpenter),
+        "carpenter_build_cost_multiplier": float(carpenter_multiplier),
+        "normal_merchant_turn_income": int(normal_merchant),
+        "advanced_merchant_turn_income": int(advanced_merchant),
+        "normal_neet_turn_recovery": int(normal_neet),
+    }
+
+
 def render_job_settings(jobs: dict[str, Job]) -> dict[str, Job]:
-    st.header("4. 職業設定")
+    st.header("5. 職業設定")
     edited_jobs: dict[str, Job] = {}
     for job_name, job in jobs.items():
         with st.expander(job_name, expanded=False):
@@ -229,7 +264,7 @@ def df_to_actions(job_name: str, tier: str, df: pd.DataFrame) -> list[Action]:
 
 
 def render_rest_settings(rest_events: dict[str, dict]) -> dict[str, dict]:
-    st.header("5. 休みイベント設定")
+    st.header("6. 休みイベント設定")
     col1, col2 = st.columns(2)
     lottery_rate = col1.number_input("宝くじ 成功確率", min_value=0.0, max_value=1.0, value=float(rest_events["lottery"]["success_rate"]), step=0.01, format="%.4f")
     lottery_amount = col2.number_input("宝くじ 当選額", min_value=0, value=int(rest_events["lottery"]["amount"]), step=10_000)
@@ -249,7 +284,7 @@ def render_rest_settings(rest_events: dict[str, dict]) -> dict[str, dict]:
 
 
 def render_results(result: dict) -> None:
-    st.header("6. シミュレーション結果")
+    st.header("7. シミュレーション結果")
     cols = st.columns(5)
     cols[0].metric("ゲームクリア率", f"{result['clear_rate']:.2%}")
     cols[1].metric("失敗率", f"{result['fail_rate']:.2%}")
@@ -279,6 +314,11 @@ def render_results(result: dict) -> None:
         "護衛バフあり建築成功率": result["guard_buffed_build_success_rate"],
         "護衛バフなし建築成功率": result["unbuffed_build_success_rate"],
         "護衛バフによる平均成功率上昇": result["average_guard_build_bonus_rate_uplift"],
+        "大工パッシブ建築費総減額": result["carpenter_passive_build_discount_total"],
+        "大工半減行動選択回数": result["carpenter_build_half_selected"],
+        "大工半減行動成功回数": result["carpenter_build_half_success"],
+        "大工半減効果発動回数": result["carpenter_build_half_effect_events"],
+        "大工半減効果あり建築回数": result["carpenter_build_half_applied_builds"],
     }]), use_container_width=True)
     st.dataframe(pd.DataFrame([{"段階": k, "到達率": v} for k, v in result["stage_reach_rates"].items()]), use_container_width=True)
 
@@ -291,6 +331,11 @@ def render_results(result: dict) -> None:
     st.dataframe(action_df, use_container_width=True)
 
     st.subheader("収入統計")
+    st.dataframe(pd.DataFrame([{
+        "商人パッシブ総収入": result["merchant_passive_income_total"],
+        "ニートパッシブ総回復量": result["neet_passive_recovery_total"],
+        "上級ニート全回復発動回数": result["advanced_neet_full_recovery_events"],
+    }]), use_container_width=True)
     source_df = pd.DataFrame([{"収入源": k, "総収入": v} for k, v in result["income_by_source"].items()])
     job_df = pd.DataFrame([
         {"職業": k, "総収入": v, "1試行あたり平均収入": result["average_income_by_job"].get(k, 0)}

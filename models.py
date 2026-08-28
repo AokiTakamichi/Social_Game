@@ -60,3 +60,9 @@ class SimulationConfig:
     rollout_count: int = 100
     normal_guard_build_bonus: float = 1 / 6
     advanced_guard_build_bonus: float = 2 / 6
+    normal_carpenter_build_discount: int = 20_000
+    advanced_carpenter_build_discount: int = 50_000
+    carpenter_build_cost_multiplier: float = 0.5
+    normal_merchant_turn_income: int = 5_000
+    advanced_merchant_turn_income: int = 10_000
+    normal_neet_turn_recovery: int = 1
