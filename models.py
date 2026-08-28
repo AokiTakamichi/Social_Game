@@ -58,3 +58,5 @@ class SimulationConfig:
     seed: int | None = None
     action_ai_mode: str = "rollout"
     rollout_count: int = 100
+    normal_guard_build_bonus: float = 1 / 6
+    advanced_guard_build_bonus: float = 2 / 6

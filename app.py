@@ -9,10 +9,12 @@ from config import (
     DEFAULT_BUILD_FAILURE_LOSS_RATE,
     DEFAULT_BUILD_SUCCESS_RATE,
     DEFAULT_CASTLE_COSTS,
+    DEFAULT_ADVANCED_GUARD_BUILD_BONUS,
     DEFAULT_INITIAL_STAMINA,
     DEFAULT_KNIGHT_STAMINA_BONUS,
     DEFAULT_MAX_STAMINA,
     DEFAULT_MAX_TURNS,
+    DEFAULT_NORMAL_GUARD_BUILD_BONUS,
     DEFAULT_PLAYER_COUNT,
     DEFAULT_TRIALS,
 )
@@ -59,6 +61,8 @@ def main() -> None:
             castle_costs=castle_settings["costs"],
             build_success_rate=castle_settings["success_rate"],
             build_failure_loss_rate=castle_settings["failure_loss_rate"],
+            normal_guard_build_bonus=castle_settings["normal_guard_build_bonus"],
+            advanced_guard_build_bonus=castle_settings["advanced_guard_build_bonus"],
             initial_stamina=stamina_settings["initial"],
             base_max_stamina=stamina_settings["maximum"],
             knight_stamina_bonus=stamina_settings["knight_bonus"],
@@ -131,7 +135,24 @@ def render_castle_settings() -> dict:
     col1, col2 = st.columns(2)
     success_rate = col1.number_input("建築成功率", min_value=0.0, max_value=1.0, value=DEFAULT_BUILD_SUCCESS_RATE, step=0.01, format="%.4f")
     failure_loss_rate = col2.number_input("失敗時損失割合", min_value=0.0, max_value=1.0, value=DEFAULT_BUILD_FAILURE_LOSS_RATE, step=0.01, format="%.4f")
-    return {"costs": costs, "success_rate": float(success_rate), "failure_loss_rate": float(failure_loss_rate)}
+    col3, col4 = st.columns(2)
+    normal_guard_text = col3.text_input("通常騎士 護衛成功時 建築成功率バフ", value="1/6")
+    advanced_guard_text = col4.text_input("騎士団長 護衛成功時 建築成功率バフ", value="2/6")
+    normal_guard_build_bonus = parse_rate(normal_guard_text, DEFAULT_NORMAL_GUARD_BUILD_BONUS)
+    advanced_guard_build_bonus = parse_rate(advanced_guard_text, DEFAULT_ADVANCED_GUARD_BUILD_BONUS)
+    if not 0 <= normal_guard_build_bonus <= 1:
+        st.warning("通常騎士の護衛バフは0から1の範囲で入力してください。デフォルト値を使用します。")
+        normal_guard_build_bonus = DEFAULT_NORMAL_GUARD_BUILD_BONUS
+    if not 0 <= advanced_guard_build_bonus <= 1:
+        st.warning("騎士団長の護衛バフは0から1の範囲で入力してください。デフォルト値を使用します。")
+        advanced_guard_build_bonus = DEFAULT_ADVANCED_GUARD_BUILD_BONUS
+    return {
+        "costs": costs,
+        "success_rate": float(success_rate),
+        "failure_loss_rate": float(failure_loss_rate),
+        "normal_guard_build_bonus": normal_guard_build_bonus,
+        "advanced_guard_build_bonus": advanced_guard_build_bonus,
+    }
 
 
 def render_stamina_settings() -> dict:
@@ -251,6 +272,13 @@ def render_results(result: dict) -> None:
         "建築挑戦回数": result["build_attempts"],
         "建築成功回数": result["build_successes"],
         "建築失敗回数": result["build_failures"],
+        "護衛選択回数": result["guard_selected"],
+        "護衛成功回数": result["guard_success"],
+        "護衛による建築バフ発生回数": result["guard_build_bonus_events"],
+        "護衛バフあり建築挑戦回数": result["guard_buffed_build_attempts"],
+        "護衛バフあり建築成功率": result["guard_buffed_build_success_rate"],
+        "護衛バフなし建築成功率": result["unbuffed_build_success_rate"],
+        "護衛バフによる平均成功率上昇": result["average_guard_build_bonus_rate_uplift"],
     }]), use_container_width=True)
     st.dataframe(pd.DataFrame([{"段階": k, "到達率": v} for k, v in result["stage_reach_rates"].items()]), use_container_width=True)
 
@@ -340,21 +368,29 @@ def render_promotion_comparison(config: SimulationConfig) -> None:
         st.line_chart(chart_df[["クリア率"]])
 
 
+def parse_rate(value: str, default: float | None = None) -> float | None:
+    text = value.strip()
+    if not text:
+        return default
+    is_percent = text.endswith("%")
+    if is_percent:
+        text = text[:-1].strip()
+    try:
+        if "/" in text:
+            numerator, denominator = text.split("/", 1)
+            rate = float(numerator.strip()) / float(denominator.strip())
+        else:
+            rate = float(text)
+    except (ValueError, ZeroDivisionError):
+        return default
+    return rate / 100 if is_percent else rate
+
+
 def parse_rate_list(value: str) -> list[float]:
     rates: list[float] = []
     for token in value.replace("\n", ",").split(","):
-        text = token.strip()
-        if not text:
-            continue
-        try:
-            if "/" in text:
-                numerator, denominator = text.split("/", 1)
-                rate = float(numerator.strip()) / float(denominator.strip())
-            else:
-                rate = float(text)
-        except (ValueError, ZeroDivisionError):
-            continue
-        if 0 <= rate <= 1:
+        rate = parse_rate(token)
+        if rate is not None and 0 <= rate <= 1:
             rates.append(rate)
     return rates
 

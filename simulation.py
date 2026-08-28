@@ -41,6 +41,8 @@ def run_promotion_rate_comparison(config: SimulationConfig, rates: list[float]) 
             seed=config.seed,
             action_ai_mode=config.action_ai_mode,
             rollout_count=config.rollout_count,
+            normal_guard_build_bonus=config.normal_guard_build_bonus,
+            advanced_guard_build_bonus=config.advanced_guard_build_bonus,
         )
         result = run_monte_carlo(compared)
         rows.append({
@@ -116,6 +118,7 @@ def _simulate_from(
     policy_mode: str,
     collect_turn_money: bool,
     reached: list[bool] | None = None,
+    current_turn_build_success_bonus: float = 0.0,
 ) -> tuple[int, int, list[DelayedEvent], list[int]]:
     turn_end_money: list[int] = []
     player_count = len(players)
@@ -129,21 +132,22 @@ def _simulate_from(
                 stats["income_by_source"][event.source] += event.amount
                 stats["income_total"] += event.amount
 
+        build_success_bonus = current_turn_build_success_bonus if turn == start_turn and start_player_index > 0 else 0.0
         for player_index in range(start_player_index, player_count):
             player = players[player_index]
             job = config.jobs.get(player.job_name)
             actions = (job.advanced_actions if player.promoted else job.normal_actions) if job else []
             available = [a for a in actions if player.stamina - a.stamina_cost >= 1 and a.effect_type != "unsupported"]
             if available:
-                action = _choose_action(config, available, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode)
-                money = _execute_action(action, player, money, turn, delayed, max_stamina, rng, stats)
+                action = _choose_action(config, available, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus)
+                money, build_success_bonus = _execute_action(action, config, player, money, turn, delayed, max_stamina, rng, stats, build_success_bonus)
             else:
                 stats["rests"] += 1
                 player.stamina = min(max_stamina, player.stamina + 2)
-                event_name = _choose_rest_event(config, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode)
+                event_name = _choose_rest_event(config, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus)
                 money = _execute_rest_event(event_name, config, player, turn, max_stamina, rng, stats, money)
 
-        progress, money = _execute_build(config, rng, stats, progress, money, reached)
+        progress, money = _execute_build(config, rng, stats, progress, money, reached, build_success_bonus)
         if collect_turn_money:
             turn_end_money.append(money)
         if progress >= len(config.castle_costs):
@@ -167,11 +171,12 @@ def _choose_action(
     max_stamina: int,
     rng: random.Random,
     policy_mode: str,
+    current_turn_build_success_bonus: float,
 ) -> Action:
     if policy_mode != AI_MODE_ROLLOUT or config.rollout_count <= 0:
         return _choose_best_action(actions, money, rng)
     scored = [
-        (action, _rollout_action_value(config, action, players, player_index, money, progress, delayed, turn, max_stamina, rng))
+        (action, _rollout_action_value(config, action, players, player_index, money, progress, delayed, turn, max_stamina, rng, current_turn_build_success_bonus))
         for action in actions
     ]
     best = max(score for _, score in scored)
@@ -196,6 +201,7 @@ def _rollout_action_value(
     turn: int,
     max_stamina: int,
     rng: random.Random,
+    current_turn_build_success_bonus: float,
 ) -> float:
     total = 0.0
     for _ in range(config.rollout_count):
@@ -206,10 +212,13 @@ def _rollout_action_value(
         rollout_player = rollout_players[player_index]
         rollout_player.stamina -= action.stamina_cost
         rollout_money = money
+        rollout_build_success_bonus = current_turn_build_success_bonus
         if rollout_rng.random() < action.success_rate:
-            income, rollout_money = _apply_action_success(action, rollout_money, turn, rollout_delayed, rollout_player, max_stamina)
+            income, rollout_money, bonus_delta = _apply_action_success(action, config, rollout_money, turn, rollout_delayed, rollout_player, max_stamina)
+            rollout_build_success_bonus += bonus_delta
             rollout_stats["income_total"] += income
             rollout_stats["income_by_source"][action.job] += income
+            _record_guard_success_stats(action, bonus_delta, rollout_stats)
         _simulate_from(
             config=config,
             rng=rollout_rng,
@@ -223,6 +232,7 @@ def _rollout_action_value(
             stats=rollout_stats,
             policy_mode=AI_MODE_IMMEDIATE,
             collect_turn_money=False,
+            current_turn_build_success_bonus=rollout_build_success_bonus,
         )
         total += rollout_stats["income_total"]
     return total / config.rollout_count
@@ -239,34 +249,39 @@ def _expected_action_income(action: Action, money: int) -> float:
     return action.success_rate * action.amount
 
 
-def _execute_action(action: Action, player: Player, money: int, turn: int, delayed: list[DelayedEvent], max_stamina: int, rng: random.Random, stats: dict) -> int:
+def _execute_action(action: Action, config: SimulationConfig, player: Player, money: int, turn: int, delayed: list[DelayedEvent], max_stamina: int, rng: random.Random, stats: dict, build_success_bonus: float) -> tuple[int, float]:
     player.stamina -= action.stamina_cost
     key = f"{action.job}:{action.name}"
     stats["action_selected"][key] += 1
     stats[f"{action.tier}_action_count_by_job"][action.job] += 1
+    if _is_guard_action(action):
+        stats["guard_selected"] += 1
     if rng.random() < action.success_rate:
         stats["action_success"][key] += 1
-        income, money = _apply_action_success(action, money, turn, delayed, player, max_stamina)
+        income, money, bonus_delta = _apply_action_success(action, config, money, turn, delayed, player, max_stamina)
+        build_success_bonus += bonus_delta
+        _record_guard_success_stats(action, bonus_delta, stats)
         stats["income_by_job"][action.job] += income
         stats["income_by_source"][action.job] += income
         stats["income_total"] += income
         stats[f"{action.tier}_action_income_by_job"][action.job] += income
-    return money
+    return money, build_success_bonus
 
 
-def _apply_action_success(action: Action, money: int, turn: int, delayed: list[DelayedEvent], player: Player, max_stamina: int) -> tuple[int, int]:
+def _apply_action_success(action: Action, config: SimulationConfig, money: int, turn: int, delayed: list[DelayedEvent], player: Player, max_stamina: int) -> tuple[int, int, float]:
+    bonus_delta = _guard_build_bonus(action, config)
     if action.effect_type == "multiplier" and action.multiplier is not None:
         new_money = int(round(money * action.multiplier))
-        return new_money - money, new_money
+        return new_money - money, new_money, bonus_delta
     if action.effect_type == "delayed_investment":
         invested = money // 2
         money -= invested
         delayed.append(DelayedEvent(turn + action.delay_turns, int(round(invested * action.delay_multiplier)), action.job))
-        return 0, money
+        return 0, money, bonus_delta
     if action.effect_type == "stamina_recovery":
         player.stamina = min(max_stamina, player.stamina + action.amount)
-        return 0, money
-    return action.amount, money + action.amount
+        return 0, money, bonus_delta
+    return action.amount, money + action.amount, bonus_delta
 
 
 def _choose_rest_event(
@@ -280,13 +295,14 @@ def _choose_rest_event(
     max_stamina: int,
     rng: random.Random,
     policy_mode: str,
+    current_turn_build_success_bonus: float,
 ) -> str:
     candidates = _available_rest_events(config, players[player_index], turn)
     if policy_mode != AI_MODE_ROLLOUT or config.rollout_count <= 0:
         values = {event_name: _expected_rest_income(config, event_name) for event_name in candidates}
     else:
         values = {
-            event_name: _rollout_rest_value(config, event_name, players, player_index, money, progress, delayed, turn, max_stamina, rng)
+            event_name: _rollout_rest_value(config, event_name, players, player_index, money, progress, delayed, turn, max_stamina, rng, current_turn_build_success_bonus)
             for event_name in candidates
         }
     best = max(values.values())
@@ -320,6 +336,7 @@ def _rollout_rest_value(
     turn: int,
     max_stamina: int,
     rng: random.Random,
+    current_turn_build_success_bonus: float,
 ) -> float:
     total = 0.0
     for _ in range(config.rollout_count):
@@ -341,6 +358,7 @@ def _rollout_rest_value(
             stats=rollout_stats,
             policy_mode=AI_MODE_IMMEDIATE,
             collect_turn_money=False,
+            current_turn_build_success_bonus=current_turn_build_success_bonus,
         )
         total += rollout_stats["income_total"]
     return total / config.rollout_count
@@ -365,7 +383,7 @@ def _execute_rest_event(event_name: str, config: SimulationConfig, player: Playe
             stats["walk_success"] += 1
             stats["walk_income"] += amount
             stats["income_total"] += amount
-            stats["income_by_source"][_rest_name(rest, "walk", "散歩")] += amount
+            stats["income_by_source"][_rest_name(rest, "walk", "謨｣豁ｩ")] += amount
     elif event_name == "sleep":
         stats["sleep_selected"] += 1
         player.stamina = min(max_stamina, player.stamina + int(rest["sleep"]["recovery"]))
@@ -381,26 +399,67 @@ def _execute_rest_event(event_name: str, config: SimulationConfig, player: Playe
     return money
 
 
-def _execute_build(config: SimulationConfig, rng: random.Random, stats: dict, progress: int, money: int, reached: list[bool] | None) -> tuple[int, int]:
+def _execute_build(config: SimulationConfig, rng: random.Random, stats: dict, progress: int, money: int, reached: list[bool] | None, build_success_bonus: float) -> tuple[int, int]:
     if progress < len(config.castle_costs):
         cost = config.castle_costs[progress]
         if money >= cost:
+            build_rate = min(1.0, config.build_success_rate + build_success_bonus)
+            actual_bonus = build_rate - config.build_success_rate
             stats["build_attempts"] += 1
-            if rng.random() < config.build_success_rate:
+            if build_success_bonus > 0:
+                stats["guard_buffed_build_attempts"] += 1
+                stats["guard_build_bonus_rate_uplift_sum"] += actual_bonus
+            else:
+                stats["unbuffed_build_attempts"] += 1
+            if rng.random() < build_rate:
                 money -= cost
                 progress += 1
                 stats["build_successes"] += 1
+                if build_success_bonus > 0:
+                    stats["guard_buffed_build_successes"] += 1
+                else:
+                    stats["unbuffed_build_successes"] += 1
                 if reached is not None:
                     reached[progress] = True
             else:
                 money -= int(round(cost * config.build_failure_loss_rate))
                 stats["build_failures"] += 1
+                if build_success_bonus > 0:
+                    stats["guard_buffed_build_failures"] += 1
+                else:
+                    stats["unbuffed_build_failures"] += 1
     return progress, money
 
 
 def _max_stamina(config: SimulationConfig) -> int:
-    knight_count = sum(1 for job in config.player_jobs if job == "騎士" or "騎士" in job)
+    knight_count = sum(1 for job in config.player_jobs if _is_knight_job_name(job))
     return config.base_max_stamina + knight_count * config.knight_stamina_bonus
+
+
+def _is_knight_job_name(job_name: str) -> bool:
+    knight = "\u9a0e\u58eb"
+    return job_name == knight or knight in job_name
+
+
+def _is_guard_action(action: Action) -> bool:
+    return _is_knight_job_name(action.job) and "\u8b77\u885b" in action.name
+
+
+def _guard_build_bonus(action: Action, config: SimulationConfig) -> float:
+    if not _is_guard_action(action):
+        return 0.0
+    if action.tier == "advanced":
+        return config.advanced_guard_build_bonus
+    return config.normal_guard_build_bonus
+
+
+def _record_guard_success_stats(action: Action, bonus_delta: float, stats: dict) -> None:
+    if not _is_guard_action(action):
+        return
+    stats["guard_success"] += 1
+    if bonus_delta > 0:
+        stats["guard_build_bonus_events"] += 1
+        stats["guard_build_bonus_generated_sum"] += bonus_delta
 
 
 def _clone_players(players: list[Player]) -> list[Player]:
@@ -425,6 +484,17 @@ def _empty_single() -> dict:
         "build_attempts": 0,
         "build_successes": 0,
         "build_failures": 0,
+        "guard_selected": 0,
+        "guard_success": 0,
+        "guard_build_bonus_events": 0,
+        "guard_build_bonus_generated_sum": 0.0,
+        "guard_buffed_build_attempts": 0,
+        "guard_buffed_build_successes": 0,
+        "guard_buffed_build_failures": 0,
+        "unbuffed_build_attempts": 0,
+        "unbuffed_build_successes": 0,
+        "unbuffed_build_failures": 0,
+        "guard_build_bonus_rate_uplift_sum": 0.0,
         "action_selected": Counter(),
         "action_success": Counter(),
         "income_by_job": defaultdict(int),
@@ -483,6 +553,11 @@ def _merge_result(aggregate: dict, result: dict) -> None:
             aggregate["reached_counts"][i] += 1
     for key in (
         "build_attempts", "build_successes", "build_failures", "income_total", "rests",
+        "guard_selected", "guard_success", "guard_build_bonus_events",
+        "guard_build_bonus_generated_sum", "guard_buffed_build_attempts",
+        "guard_buffed_build_successes", "guard_buffed_build_failures",
+        "unbuffed_build_attempts", "unbuffed_build_successes", "unbuffed_build_failures",
+        "guard_build_bonus_rate_uplift_sum",
         "lottery_selected", "lottery_wins", "lottery_income", "walk_selected",
         "walk_success", "walk_income", "sleep_selected", "promotion_attempts", "promotion_success",
         "promotion_attempt_games", "promotion_success_games",
@@ -510,6 +585,18 @@ def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
     lottery_share = aggregate["lottery_income"] / aggregate["income_total"] if aggregate["income_total"] else 0
     promotion_attempt_game_rate = aggregate["promotion_attempt_games"] / trials if trials else 0
     promotion_success_rate = aggregate["promotion_success"] / aggregate["promotion_attempts"] if aggregate["promotion_attempts"] else 0
+    guard_buffed_build_success_rate = (
+        aggregate["guard_buffed_build_successes"] / aggregate["guard_buffed_build_attempts"]
+        if aggregate["guard_buffed_build_attempts"] else 0
+    )
+    unbuffed_build_success_rate = (
+        aggregate["unbuffed_build_successes"] / aggregate["unbuffed_build_attempts"]
+        if aggregate["unbuffed_build_attempts"] else 0
+    )
+    average_guard_build_bonus_rate_uplift = (
+        aggregate["guard_build_bonus_rate_uplift_sum"] / aggregate["guard_buffed_build_attempts"]
+        if aggregate["guard_buffed_build_attempts"] else 0
+    )
     return {
         "clear_rate": clear_rate,
         "fail_rate": 1 - clear_rate,
@@ -521,6 +608,18 @@ def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
         "build_attempts": aggregate["build_attempts"],
         "build_successes": aggregate["build_successes"],
         "build_failures": aggregate["build_failures"],
+        "guard_selected": aggregate["guard_selected"],
+        "guard_success": aggregate["guard_success"],
+        "guard_build_bonus_events": aggregate["guard_build_bonus_events"],
+        "guard_buffed_build_attempts": aggregate["guard_buffed_build_attempts"],
+        "guard_buffed_build_successes": aggregate["guard_buffed_build_successes"],
+        "guard_buffed_build_failures": aggregate["guard_buffed_build_failures"],
+        "guard_buffed_build_success_rate": guard_buffed_build_success_rate,
+        "unbuffed_build_attempts": aggregate["unbuffed_build_attempts"],
+        "unbuffed_build_successes": aggregate["unbuffed_build_successes"],
+        "unbuffed_build_failures": aggregate["unbuffed_build_failures"],
+        "unbuffed_build_success_rate": unbuffed_build_success_rate,
+        "average_guard_build_bonus_rate_uplift": average_guard_build_bonus_rate_uplift,
         "action_selected": dict(aggregate["action_selected"]),
         "action_success": dict(aggregate["action_success"]),
         "income_by_job": dict(aggregate["income_by_job"]),
