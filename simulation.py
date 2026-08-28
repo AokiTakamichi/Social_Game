@@ -4,7 +4,17 @@ import random
 from collections import Counter, defaultdict
 from statistics import mean
 
-from models import Action, DelayedEvent, Player, SimulationConfig
+from config import (
+    CARD_HAND_SWAP,
+    CARD_LABELS,
+    CARD_LOTTERY,
+    CARD_ORDER_SWAP,
+    CARD_PROMOTION,
+    CARD_SLEEP,
+    CARD_WALK,
+    DEFAULT_CARD_COUNTS,
+)
+from models import Action, CardState, DelayedEvent, Player, SimulationConfig
 
 AI_MODE_IMMEDIATE = "immediate"
 AI_MODE_ROLLOUT = "rollout"
@@ -40,6 +50,9 @@ def run_promotion_rate_comparison(config: SimulationConfig, rates: list[float]) 
             rest_events=rest_events,
             jobs=config.jobs,
             seed=config.seed,
+            initial_hand_size=config.initial_hand_size,
+            mulligan_enabled=config.mulligan_enabled,
+            card_counts=dict(config.card_counts),
             action_ai_mode=config.action_ai_mode,
             rollout_count=config.rollout_count,
             normal_guard_build_bonus=config.normal_guard_build_bonus,
@@ -107,6 +120,9 @@ def _copy_config(config: SimulationConfig, **overrides: object) -> SimulationCon
         "rest_events": {key: dict(value) for key, value in config.rest_events.items()},
         "jobs": config.jobs,
         "seed": config.seed,
+        "initial_hand_size": config.initial_hand_size,
+        "mulligan_enabled": config.mulligan_enabled,
+        "card_counts": dict(config.card_counts),
         "action_ai_mode": config.action_ai_mode,
         "rollout_count": config.rollout_count,
         "normal_guard_build_bonus": config.normal_guard_build_bonus,
@@ -129,6 +145,11 @@ def _run_single_game(config: SimulationConfig, rng: random.Random) -> dict:
     initial_stamina = min(config.initial_stamina, max_stamina)
     players = [Player(job_name=job, stamina=initial_stamina) for job in config.player_jobs]
     stats = _empty_single()
+    cards = _create_card_state(config, len(players), rng)
+    expected_card_total = _total_cards(cards)
+    _deal_initial_hands(config, cards, rng, stats)
+    if config.mulligan_enabled:
+        _run_mulligans(config, cards, players, rng, stats, 0, AI_MODE_IMMEDIATE)
     reached = [False] * (len(config.castle_costs) + 1)
     reached[0] = True
 
@@ -139,6 +160,7 @@ def _run_single_game(config: SimulationConfig, rng: random.Random) -> dict:
         money=0,
         progress=0,
         delayed=[],
+        cards=cards,
         start_turn=1,
         start_player_index=0,
         max_stamina=max_stamina,
@@ -153,6 +175,10 @@ def _run_single_game(config: SimulationConfig, rng: random.Random) -> dict:
 
     for idx in range(1, progress + 1):
         reached[idx] = True
+    stats["card_total_expected"] = expected_card_total
+    stats["card_total_final"] = _total_cards(cards)
+    if stats["card_total_expected"] != stats["card_total_final"]:
+        stats["card_total_mismatch_games"] += 1
     stats["final_progress"] = progress
     stats["turn_end_money"] = turn_end_money
     stats["reached"] = reached
@@ -177,6 +203,7 @@ def _simulate_from(
     money: int,
     progress: int,
     delayed: list[DelayedEvent],
+    cards: CardState,
     start_turn: int,
     start_player_index: int,
     max_stamina: int,
@@ -187,6 +214,7 @@ def _simulate_from(
     current_turn_build_success_bonus: float = 0.0,
     current_turn_build_cost_halved: bool = False,
     current_lottery_multiplier: float = 1.0,
+    current_turn_order: list[int] | None = None,
 ) -> tuple[int, int, list[DelayedEvent], list[int]]:
     turn_end_money: list[int] = []
     player_count = len(players)
@@ -202,21 +230,29 @@ def _simulate_from(
                 stats["income_total"] += event.amount
             money = _apply_turn_start_passives(config, players, money, max_stamina, stats)
 
-        build_success_bonus = current_turn_build_success_bonus if turn == start_turn and start_player_index > 0 else 0.0
-        build_cost_halved = current_turn_build_cost_halved if turn == start_turn and start_player_index > 0 else False
-        for player_index in range(start_player_index, player_count):
+        continuing_turn = turn == start_turn and start_player_index > 0
+        build_success_bonus = current_turn_build_success_bonus if continuing_turn else 0.0
+        build_cost_halved = current_turn_build_cost_halved if continuing_turn else False
+        action_order = list(current_turn_order) if continuing_turn and current_turn_order is not None else list(range(player_count))
+        for order_position in range(start_player_index, player_count):
+            player_index = action_order[order_position]
             player = players[player_index]
             job = config.jobs.get(player.job_name)
             actions = (job.advanced_actions if player.promoted else job.normal_actions) if job else []
             available = [a for a in actions if player.stamina - a.stamina_cost >= 1 and a.effect_type != "unsupported"]
             if available:
-                action = _choose_action(config, available, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
+                action = _choose_action(config, available, players, player_index, money, progress, delayed, cards, turn, order_position, action_order, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
                 money, build_success_bonus, build_cost_halved, lottery_multiplier = _execute_action(action, config, player, money, turn, delayed, max_stamina, rng, stats, build_success_bonus, build_cost_halved, lottery_multiplier)
             else:
                 stats["rests"] += 1
                 player.stamina = min(max_stamina, player.stamina + 2)
-                event_name = _choose_rest_event(config, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
-                money, lottery_multiplier = _execute_rest_event(event_name, config, player, turn, max_stamina, rng, stats, money, lottery_multiplier)
+                drawn_cards = _draw_cards(cards, player_index, 1, rng, stats)
+                card_name = _choose_rest_card(config, players, player_index, money, progress, delayed, cards, turn, order_position, action_order, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
+                if card_name is not None:
+                    money, lottery_multiplier = _use_rest_card(card_name, config, players, player_index, money, progress, delayed, cards, turn, order_position, action_order, max_stamina, rng, stats, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
+                elif drawn_cards:
+                    _discard_drawn_unusable_card(cards, player_index, drawn_cards[-1], stats)
+                    stats["promotion_locked_stalls"] += 1
 
         progress, money = _execute_build(config, rng, stats, progress, money, reached, build_success_bonus, build_cost_halved, players)
         if collect_turn_money:
@@ -226,6 +262,7 @@ def _simulate_from(
             stats["clear_turn"] = turn
             break
         start_player_index = 0
+        current_turn_order = None
 
     return money, progress, delayed, turn_end_money
 
@@ -238,7 +275,10 @@ def _choose_action(
     money: int,
     progress: int,
     delayed: list[DelayedEvent],
+    cards: CardState,
     turn: int,
+    order_position: int,
+    action_order: list[int],
     max_stamina: int,
     rng: random.Random,
     policy_mode: str,
@@ -253,7 +293,7 @@ def _choose_action(
             action,
             _rollout_action_outcome(
                 config, action, players, player_index, money, progress, delayed, turn,
-                max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved,
+                cards, order_position, action_order, max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved,
                 current_lottery_multiplier,
             ),
         )
@@ -286,6 +326,9 @@ def _rollout_action_outcome(
     progress: int,
     delayed: list[DelayedEvent],
     turn: int,
+    cards: CardState,
+    order_position: int,
+    action_order: list[int],
     max_stamina: int,
     rng: random.Random,
     current_turn_build_success_bonus: float,
@@ -298,6 +341,7 @@ def _rollout_action_outcome(
         rollout_rng = random.Random(rng.randrange(2**63))
         rollout_players = _clone_players(players)
         rollout_delayed = _clone_delayed(delayed)
+        rollout_cards = _clone_cards(cards)
         rollout_stats = _empty_single()
         rollout_player = rollout_players[player_index]
         rollout_player.stamina -= action.stamina_cost
@@ -320,8 +364,9 @@ def _rollout_action_outcome(
             money=rollout_money,
             progress=progress,
             delayed=rollout_delayed,
+            cards=rollout_cards,
             start_turn=turn,
-            start_player_index=player_index + 1,
+            start_player_index=order_position + 1,
             max_stamina=max_stamina,
             stats=rollout_stats,
             policy_mode=AI_MODE_IMMEDIATE,
@@ -329,6 +374,7 @@ def _rollout_action_outcome(
             current_turn_build_success_bonus=rollout_build_success_bonus,
             current_turn_build_cost_halved=rollout_build_cost_halved,
             current_lottery_multiplier=rollout_lottery_multiplier,
+            current_turn_order=list(action_order),
         )
         total += rollout_stats["income_total"]
         if rollout_stats["cleared"]:
@@ -445,6 +491,184 @@ def _available_rest_events(config: SimulationConfig, player: Player, turn: int) 
     return events
 
 
+def _choose_rest_card(
+    config: SimulationConfig,
+    players: list[Player],
+    player_index: int,
+    money: int,
+    progress: int,
+    delayed: list[DelayedEvent],
+    cards: CardState,
+    turn: int,
+    order_position: int,
+    action_order: list[int],
+    max_stamina: int,
+    rng: random.Random,
+    policy_mode: str,
+    current_turn_build_success_bonus: float,
+    current_turn_build_cost_halved: bool,
+    current_lottery_multiplier: float,
+) -> str | None:
+    candidates = _available_hand_cards(config, cards.hands[player_index], players[player_index], turn)
+    if not candidates:
+        return None
+    if policy_mode not in (AI_MODE_ROLLOUT, AI_MODE_COMPLETION) or config.rollout_count <= 0:
+        values = {card: _expected_card_income(config, card, current_lottery_multiplier) for card in candidates}
+        best = max(values.values())
+        return rng.choice([card for card, value in values.items() if value == best])
+    scored = {
+        card: _rollout_card_outcome(
+            config, card, players, player_index, money, progress, delayed, cards, turn,
+            order_position, action_order, max_stamina, rng, current_turn_build_success_bonus,
+            current_turn_build_cost_halved, current_lottery_multiplier,
+        )
+        for card in candidates
+    }
+    if policy_mode == AI_MODE_COMPLETION:
+        best = max((score["completion_probability"], score["expected_total_income"]) for score in scored.values())
+        return rng.choice([
+            card for card, score in scored.items()
+            if (score["completion_probability"], score["expected_total_income"]) == best
+        ])
+    best_income = max(score["expected_total_income"] for score in scored.values())
+    return rng.choice([card for card, score in scored.items() if score["expected_total_income"] == best_income])
+
+
+def _available_hand_cards(config: SimulationConfig, hand: list[str], player: Player, turn: int) -> list[str]:
+    candidates: list[str] = []
+    for card in hand:
+        if card == CARD_PROMOTION and (player.promoted or turn < int(config.rest_events["promotion"]["unlock_turn"])):
+            continue
+        candidates.append(card)
+    return candidates
+
+
+def _expected_card_income(config: SimulationConfig, card_name: str, lottery_multiplier: float = 1.0) -> float:
+    if card_name in (CARD_LOTTERY, CARD_WALK, CARD_SLEEP, CARD_PROMOTION):
+        return _expected_rest_income(config, card_name, lottery_multiplier)
+    return 0.0
+
+
+def _rollout_card_outcome(
+    config: SimulationConfig,
+    card_name: str,
+    players: list[Player],
+    player_index: int,
+    money: int,
+    progress: int,
+    delayed: list[DelayedEvent],
+    cards: CardState,
+    turn: int,
+    order_position: int,
+    action_order: list[int],
+    max_stamina: int,
+    rng: random.Random,
+    current_turn_build_success_bonus: float,
+    current_turn_build_cost_halved: bool,
+    current_lottery_multiplier: float,
+) -> dict[str, float]:
+    total = 0.0
+    completed = 0
+    for _ in range(config.rollout_count):
+        rollout_rng = random.Random(rng.randrange(2**63))
+        rollout_players = _clone_players(players)
+        rollout_delayed = _clone_delayed(delayed)
+        rollout_cards = _clone_cards(cards)
+        rollout_order = list(action_order)
+        rollout_stats = _empty_single()
+        rollout_money, rollout_lottery_multiplier = _use_rest_card(
+            card_name, config, rollout_players, player_index, money, progress, rollout_delayed,
+            rollout_cards, turn, order_position, rollout_order, max_stamina, rollout_rng,
+            rollout_stats, AI_MODE_IMMEDIATE, current_turn_build_success_bonus,
+            current_turn_build_cost_halved, current_lottery_multiplier,
+        )
+        _simulate_from(
+            config=config,
+            rng=rollout_rng,
+            players=rollout_players,
+            money=rollout_money,
+            progress=progress,
+            delayed=rollout_delayed,
+            cards=rollout_cards,
+            start_turn=turn,
+            start_player_index=order_position + 1,
+            max_stamina=max_stamina,
+            stats=rollout_stats,
+            policy_mode=AI_MODE_IMMEDIATE,
+            collect_turn_money=False,
+            current_turn_build_success_bonus=current_turn_build_success_bonus,
+            current_turn_build_cost_halved=current_turn_build_cost_halved,
+            current_lottery_multiplier=rollout_lottery_multiplier,
+            current_turn_order=rollout_order,
+        )
+        total += rollout_stats["income_total"]
+        if rollout_stats["cleared"]:
+            completed += 1
+    return {
+        "completion_probability": completed / config.rollout_count,
+        "expected_total_income": total / config.rollout_count,
+    }
+
+
+def _use_rest_card(
+    card_name: str,
+    config: SimulationConfig,
+    players: list[Player],
+    player_index: int,
+    money: int,
+    progress: int,
+    delayed: list[DelayedEvent],
+    cards: CardState,
+    turn: int,
+    order_position: int,
+    action_order: list[int],
+    max_stamina: int,
+    rng: random.Random,
+    stats: dict,
+    policy_mode: str,
+    build_success_bonus: float,
+    build_cost_halved: bool,
+    lottery_multiplier: float,
+) -> tuple[int, float]:
+    hand = cards.hands[player_index]
+    if card_name not in hand:
+        return money, lottery_multiplier
+    hand.remove(card_name)
+    cards.discard.append(card_name)
+    stats["card_use_counts"][card_name] += 1
+    stats["card_discard_counts"][card_name] += 1
+    if card_name in (CARD_LOTTERY, CARD_WALK, CARD_SLEEP, CARD_PROMOTION):
+        if card_name == CARD_LOTTERY:
+            stats["lottery_card_uses"] += 1
+        money, lottery_multiplier = _execute_rest_event(card_name, config, players[player_index], turn, max_stamina, rng, stats, money, lottery_multiplier)
+        if card_name == CARD_SLEEP:
+            stats["sleep_extra_recovery_total"] += int(config.rest_events["sleep"]["recovery"])
+        if card_name == CARD_PROMOTION:
+            stats["promotion_card_uses"] += 1
+    elif card_name == CARD_HAND_SWAP:
+        target = _choose_hand_swap_target(config, players, player_index, cards, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
+        if target is not None:
+            before_self = list(hand)
+            before_target = list(cards.hands[target])
+            hand[:], cards.hands[target] = before_target, before_self
+            stats["hand_swap_uses"] += 1
+            stats["hand_swap_target_jobs"][players[target].job_name] += 1
+            for moved in before_self + before_target:
+                stats["hand_swap_card_counts"][moved] += 1
+    elif card_name == CARD_ORDER_SWAP:
+        stats["order_swap_uses"] += 1
+        before = action_order[order_position + 1:]
+        after = _choose_remaining_order(config, players, before, money, progress, policy_mode)
+        if after != before:
+            stats["order_swap_changed"] += 1
+            stats["order_swap_before_after"].append((
+                [players[idx].job_name for idx in before],
+                [players[idx].job_name for idx in after],
+            ))
+        action_order[order_position + 1:] = after
+    return money, lottery_multiplier
+
+
 def _expected_rest_income(config: SimulationConfig, event_name: str, lottery_multiplier: float = 1.0) -> float:
     rest = config.rest_events
     if event_name == "lottery":
@@ -475,6 +699,7 @@ def _rollout_rest_outcome(
         rollout_rng = random.Random(rng.randrange(2**63))
         rollout_players = _clone_players(players)
         rollout_delayed = _clone_delayed(delayed)
+        rollout_cards = _create_card_state(config, len(players), rollout_rng)
         rollout_stats = _empty_single()
         rollout_money, rollout_lottery_multiplier = _execute_rest_event(event_name, config, rollout_players[player_index], turn, max_stamina, rollout_rng, rollout_stats, money, current_lottery_multiplier)
         _simulate_from(
@@ -484,6 +709,7 @@ def _rollout_rest_outcome(
             money=rollout_money,
             progress=progress,
             delayed=rollout_delayed,
+            cards=rollout_cards,
             start_turn=turn,
             start_player_index=player_index + 1,
             max_stamina=max_stamina,
@@ -717,6 +943,188 @@ def _record_neet_prayer_stats(action: Action, prayer_tier: str | None, stats: di
         stats["normal_neet_lottery_multiplier_activations"] += 1
 
 
+def _create_card_state(config: SimulationConfig, player_count: int, rng: random.Random) -> CardState:
+    counts = dict(DEFAULT_CARD_COUNTS)
+    counts.update(config.card_counts or {})
+    deck: list[str] = []
+    for card_name, count in counts.items():
+        deck.extend([card_name] * max(0, int(count)))
+    rng.shuffle(deck)
+    return CardState(deck=deck, discard=[], hands=[[] for _ in range(player_count)])
+
+
+def _deal_initial_hands(config: SimulationConfig, cards: CardState, rng: random.Random, stats: dict) -> None:
+    for player_index in range(len(cards.hands)):
+        drawn = _draw_cards(cards, player_index, config.initial_hand_size, rng, stats)
+        for card_name in drawn:
+            stats["initial_dealt_card_counts"][card_name] += 1
+            stats["initial_after_mulligan_card_counts"][card_name] += 1
+
+
+def _run_mulligans(
+    config: SimulationConfig,
+    cards: CardState,
+    players: list[Player],
+    rng: random.Random,
+    stats: dict,
+    money: int,
+    policy_mode: str,
+) -> None:
+    deck_values = [_mulligan_card_value(config, card, money, 1.0) for card in cards.deck]
+    average_deck_value = sum(deck_values) / len(deck_values) if deck_values else 0.0
+    for player_index, hand in enumerate(cards.hands):
+        indexed = [
+            (idx, card, _mulligan_card_value(config, card, money, 1.0))
+            for idx, card in enumerate(hand)
+        ]
+        replace_indexes = [
+            idx for idx, card, value in indexed
+            if card == CARD_PROMOTION or value < average_deck_value
+        ]
+        if not replace_indexes:
+            continue
+        removed = [hand[idx] for idx in sorted(replace_indexes, reverse=True)]
+        for idx in sorted(replace_indexes, reverse=True):
+            del hand[idx]
+        stats["mulligan_players"] += 1
+        stats["mulligan_cards"] += len(removed)
+        for card_name in removed:
+            stats["initial_after_mulligan_card_counts"][card_name] -= 1
+        drawn = _draw_cards(cards, player_index, len(removed), rng, stats)
+        for card_name in drawn:
+            stats["initial_after_mulligan_card_counts"][card_name] += 1
+        cards.deck.extend(removed)
+        rng.shuffle(cards.deck)
+
+
+def _mulligan_card_value(config: SimulationConfig, card_name: str, money: int, lottery_multiplier: float) -> float:
+    if card_name == CARD_SLEEP:
+        return float(config.rest_events["sleep"]["recovery"]) * 1_000
+    if card_name == CARD_PROMOTION:
+        return -1.0
+    return _expected_card_income(config, card_name, lottery_multiplier)
+
+
+def _draw_cards(cards: CardState, player_index: int, count: int, rng: random.Random, stats: dict) -> list[str]:
+    drawn: list[str] = []
+    for _ in range(max(0, int(count))):
+        if not cards.deck:
+            _rebuild_deck(cards, rng, stats)
+        if not cards.deck:
+            break
+        card_name = cards.deck.pop()
+        cards.hands[player_index].append(card_name)
+        drawn.append(card_name)
+        stats["card_draw_counts"][card_name] += 1
+    return drawn
+
+
+def _rebuild_deck(cards: CardState, rng: random.Random, stats: dict) -> None:
+    if not cards.discard:
+        return
+    cards.deck.extend(cards.discard)
+    cards.discard.clear()
+    rng.shuffle(cards.deck)
+    stats["deck_rebuilds"] += 1
+
+
+def _discard_drawn_unusable_card(cards: CardState, player_index: int, card_name: str, stats: dict) -> None:
+    hand = cards.hands[player_index]
+    if hand and hand[-1] == card_name:
+        hand.pop()
+    elif card_name in hand:
+        hand.remove(card_name)
+    else:
+        return
+    cards.discard.append(card_name)
+    stats["card_discard_counts"][card_name] += 1
+
+
+def _clone_cards(cards: CardState) -> CardState:
+    return CardState(
+        deck=list(cards.deck),
+        discard=list(cards.discard),
+        hands=[list(hand) for hand in cards.hands],
+    )
+
+
+def _total_cards(cards: CardState) -> int:
+    return len(cards.deck) + len(cards.discard) + sum(len(hand) for hand in cards.hands)
+
+
+def _choose_hand_swap_target(
+    config: SimulationConfig,
+    players: list[Player],
+    player_index: int,
+    cards: CardState,
+    money: int,
+    progress: int,
+    delayed: list[DelayedEvent],
+    turn: int,
+    max_stamina: int,
+    rng: random.Random,
+    policy_mode: str,
+    build_success_bonus: float,
+    build_cost_halved: bool,
+    lottery_multiplier: float,
+) -> int | None:
+    candidates = [idx for idx in range(len(players)) if idx != player_index]
+    if not candidates:
+        return None
+    scored = []
+    own_hand = cards.hands[player_index]
+    for target in candidates:
+        target_hand = cards.hands[target]
+        score = _hand_value(config, target_hand, players[player_index], turn, lottery_multiplier)
+        score -= _hand_value(config, own_hand, players[player_index], turn, lottery_multiplier)
+        scored.append((target, score))
+    best = max(score for _, score in scored)
+    return rng.choice([target for target, score in scored if score == best])
+
+
+def _hand_value(config: SimulationConfig, hand: list[str], player: Player, turn: int, lottery_multiplier: float) -> float:
+    total = 0.0
+    for card_name in _available_hand_cards(config, hand, player, turn):
+        total += _expected_card_income(config, card_name, lottery_multiplier)
+        if card_name == CARD_SLEEP:
+            total += float(config.rest_events["sleep"]["recovery"]) * 1_000
+        if card_name == CARD_PROMOTION:
+            total += 20_000
+    return total
+
+
+def _choose_remaining_order(
+    config: SimulationConfig,
+    players: list[Player],
+    remaining: list[int],
+    money: int,
+    progress: int,
+    policy_mode: str,
+) -> list[int]:
+    if len(remaining) <= 1:
+        return list(remaining)
+    return sorted(remaining, key=lambda idx: _order_priority(config, players[idx], money, progress, policy_mode), reverse=True)
+
+
+def _order_priority(config: SimulationConfig, player: Player, money: int, progress: int, policy_mode: str) -> float:
+    score = 0.0
+    if _is_carpenter_job_name(player.job_name):
+        score += 30.0
+    if _is_knight_job_name(player.job_name):
+        score += 25.0
+    if _is_merchant_job_name(player.job_name):
+        score += 20.0
+    if _is_neet_job_name(player.job_name):
+        score += 5.0
+    if player.promoted:
+        score += 3.0
+    if policy_mode == AI_MODE_COMPLETION and progress < len(config.castle_costs):
+        effective_cost, _discount = _effective_build_cost(config, progress, False, [player])
+        if money >= effective_cost:
+            score += 10.0
+    return score
+
+
 def _clone_players(players: list[Player]) -> list[Player]:
     return [Player(job_name=player.job_name, stamina=player.stamina, promoted=player.promoted) for player in players]
 
@@ -797,6 +1205,27 @@ def _empty_single() -> dict:
         "promoted_game_count_by_job": defaultdict(int),
         "unpromoted_game_income_by_job": defaultdict(int),
         "unpromoted_game_count_by_job": defaultdict(int),
+        "card_draw_counts": Counter(),
+        "card_use_counts": Counter(),
+        "card_discard_counts": Counter(),
+        "initial_dealt_card_counts": Counter(),
+        "initial_after_mulligan_card_counts": Counter(),
+        "mulligan_players": 0,
+        "mulligan_cards": 0,
+        "deck_rebuilds": 0,
+        "hand_swap_uses": 0,
+        "hand_swap_target_jobs": Counter(),
+        "hand_swap_card_counts": Counter(),
+        "order_swap_uses": 0,
+        "order_swap_changed": 0,
+        "order_swap_before_after": [],
+        "promotion_card_uses": 0,
+        "promotion_locked_stalls": 0,
+        "lottery_card_uses": 0,
+        "sleep_extra_recovery_total": 0,
+        "card_total_expected": 0,
+        "card_total_final": 0,
+        "card_total_mismatch_games": 0,
     }
 
 
@@ -841,6 +1270,10 @@ def _merge_result(aggregate: dict, result: dict) -> None:
         "unboosted_lottery_wins", "lottery_income", "walk_selected",
         "walk_success", "walk_income", "sleep_selected", "promotion_attempts", "promotion_success",
         "promotion_attempt_games", "promotion_success_games",
+        "mulligan_players", "mulligan_cards", "deck_rebuilds", "hand_swap_uses",
+        "order_swap_uses", "order_swap_changed", "promotion_card_uses",
+        "promotion_locked_stalls", "lottery_card_uses", "sleep_extra_recovery_total",
+        "card_total_mismatch_games",
     ):
         aggregate[key] += result[key]
     for key in (
@@ -851,10 +1284,14 @@ def _merge_result(aggregate: dict, result: dict) -> None:
         "promotion_attempt_game_jobs", "promotion_success_game_jobs",
         "promoted_game_income_by_job", "promoted_game_count_by_job",
         "unpromoted_game_income_by_job", "unpromoted_game_count_by_job",
+        "card_draw_counts", "card_use_counts", "card_discard_counts",
+        "initial_dealt_card_counts", "initial_after_mulligan_card_counts",
+        "hand_swap_target_jobs", "hand_swap_card_counts",
     ):
         for subkey, value in result[key].items():
             aggregate[key][subkey] += value
     aggregate["promotion_turns"].extend(result["promotion_turns"])
+    aggregate["order_swap_before_after"].extend(result["order_swap_before_after"])
     for job, turns in result["promotion_turns_by_job"].items():
         aggregate["promotion_turns_by_job"][job].extend(turns)
 
@@ -865,6 +1302,11 @@ def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
     boosted_lottery_rate = aggregate["boosted_lottery_wins"] / aggregate["boosted_lottery_attempts"] if aggregate["boosted_lottery_attempts"] else 0
     unboosted_lottery_rate = aggregate["unboosted_lottery_wins"] / aggregate["unboosted_lottery_attempts"] if aggregate["unboosted_lottery_attempts"] else 0
     lottery_share = aggregate["lottery_income"] / aggregate["income_total"] if aggregate["income_total"] else 0
+    card_use_rates = {
+        card: aggregate["card_use_counts"].get(card, 0) / aggregate["card_draw_counts"].get(card, 1)
+        for card in set(aggregate["card_draw_counts"]) | set(aggregate["card_use_counts"])
+        if aggregate["card_draw_counts"].get(card, 0)
+    }
     promotion_attempt_game_rate = aggregate["promotion_attempt_games"] / trials if trials else 0
     promotion_success_rate = aggregate["promotion_success"] / aggregate["promotion_attempts"] if aggregate["promotion_attempts"] else 0
     guard_buffed_build_success_rate = (
@@ -943,6 +1385,26 @@ def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
         "average_promotion_turn": mean(aggregate["promotion_turns"]) if aggregate["promotion_turns"] else None,
         "income_by_source": dict(aggregate["income_by_source"]),
         "promotion_by_job": _finalize_promotion_by_job(aggregate, trials),
+        "card_draw_counts": dict(aggregate["card_draw_counts"]),
+        "card_use_counts": dict(aggregate["card_use_counts"]),
+        "card_use_rates": card_use_rates,
+        "card_discard_counts": dict(aggregate["card_discard_counts"]),
+        "initial_dealt_card_counts": dict(aggregate["initial_dealt_card_counts"]),
+        "initial_after_mulligan_card_counts": dict(aggregate["initial_after_mulligan_card_counts"]),
+        "mulligan_players": aggregate["mulligan_players"],
+        "mulligan_cards": aggregate["mulligan_cards"],
+        "deck_rebuilds": aggregate["deck_rebuilds"],
+        "hand_swap_uses": aggregate["hand_swap_uses"],
+        "hand_swap_target_jobs": dict(aggregate["hand_swap_target_jobs"]),
+        "hand_swap_card_counts": dict(aggregate["hand_swap_card_counts"]),
+        "order_swap_uses": aggregate["order_swap_uses"],
+        "order_swap_changed": aggregate["order_swap_changed"],
+        "order_swap_before_after": aggregate["order_swap_before_after"][:50],
+        "promotion_card_uses": aggregate["promotion_card_uses"],
+        "promotion_locked_stalls": aggregate["promotion_locked_stalls"],
+        "lottery_card_uses": aggregate["lottery_card_uses"],
+        "sleep_extra_recovery_total": aggregate["sleep_extra_recovery_total"],
+        "card_total_mismatch_games": aggregate["card_total_mismatch_games"],
     }
 
 

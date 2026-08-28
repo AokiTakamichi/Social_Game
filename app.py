@@ -26,6 +26,8 @@ from config import (
     DEFAULT_NORMAL_NEET_PRAY_LOTTERY_MULTIPLIER,
     DEFAULT_PLAYER_COUNT,
     DEFAULT_TRIALS,
+    CARD_LABELS,
+    DEFAULT_CARD_COUNTS,
 )
 from data_loader import find_excel_file, load_game_data
 from models import Action, Job, SimulationConfig
@@ -62,6 +64,7 @@ def main() -> None:
     passive_settings = render_passive_settings()
     edited_jobs = render_job_settings(jobs)
     edited_rest_events = render_rest_settings(rest_events)
+    card_settings = render_card_settings()
 
     if st.button("シミュレーション実行", type="primary"):
         config = SimulationConfig(
@@ -87,6 +90,9 @@ def main() -> None:
             rest_events=edited_rest_events,
             jobs=edited_jobs,
             seed=sim_settings["seed"],
+            initial_hand_size=card_settings["initial_hand_size"],
+            mulligan_enabled=card_settings["mulligan_enabled"],
+            card_counts=card_settings["card_counts"],
             action_ai_mode=sim_settings["action_ai_mode"],
             rollout_count=sim_settings["rollout_count"],
         )
@@ -311,6 +317,30 @@ def render_rest_settings(rest_events: dict[str, dict]) -> dict[str, dict]:
     }
 
 
+def render_card_settings() -> dict:
+    st.header("7. カード設定")
+    col1, col2, col3 = st.columns(3)
+    initial_hand_size = col1.number_input("初期手札枚数", min_value=0, max_value=10, value=2, step=1)
+    mulligan_enabled = col2.checkbox("マリガン有効", value=True)
+    counts: dict[str, int] = {}
+    cols = st.columns(3)
+    for idx, (card_name, default_count) in enumerate(DEFAULT_CARD_COUNTS.items()):
+        label = CARD_LABELS.get(card_name, card_name)
+        counts[card_name] = int(cols[idx % len(cols)].number_input(
+            f"{label} 枚数",
+            min_value=0,
+            max_value=999,
+            value=int(default_count),
+            step=1,
+        ))
+    col3.metric("山札総枚数", sum(counts.values()))
+    return {
+        "initial_hand_size": int(initial_hand_size),
+        "mulligan_enabled": bool(mulligan_enabled),
+        "card_counts": counts,
+    }
+
+
 def render_results(result: dict) -> None:
     st.header("7. シミュレーション結果")
     cols = st.columns(5)
@@ -390,6 +420,37 @@ def render_results(result: dict) -> None:
     }]), use_container_width=True)
 
     st.subheader("昇格による上昇幅")
+    card_names = sorted(
+        set(result["card_draw_counts"])
+        | set(result["card_use_counts"])
+        | set(result["card_discard_counts"])
+    )
+    card_df = pd.DataFrame([
+        {
+            "カード": CARD_LABELS.get(card, card),
+            "ドロー回数": result["card_draw_counts"].get(card, 0),
+            "使用回数": result["card_use_counts"].get(card, 0),
+            "使用率": result["card_use_rates"].get(card, 0),
+            "捨て札回数": result["card_discard_counts"].get(card, 0),
+        }
+        for card in card_names
+    ])
+    st.subheader("カード統計")
+    st.dataframe(card_df, use_container_width=True)
+    st.dataframe(pd.DataFrame([{
+        "マリガン実行人数": result["mulligan_players"],
+        "マリガン枚数": result["mulligan_cards"],
+        "山札再構築回数": result["deck_rebuilds"],
+        "カード交換使用回数": result["hand_swap_uses"],
+        "順番入れ替え使用回数": result["order_swap_uses"],
+        "実際に順番が変更された回数": result["order_swap_changed"],
+        "昇格カード使用回数": result["promotion_card_uses"],
+        "解禁前昇格滞留回数": result["promotion_locked_stalls"],
+        "宝くじカード使用回数": result["lottery_card_uses"],
+        "ドカ寝総追加回復量": result["sleep_extra_recovery_total"],
+        "カード総数不一致ゲーム数": result["card_total_mismatch_games"],
+    }]), use_container_width=True)
+
     promotion_rows = [
         {
             "職業": row["job"],

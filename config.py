@@ -24,6 +24,31 @@ DEFAULT_KNIGHT_STAMINA_BONUS = 1
 
 DEFAULT_PLAYER_COUNT = 4
 
+CARD_LOTTERY = "lottery"
+CARD_PROMOTION = "promotion"
+CARD_WALK = "walk"
+CARD_SLEEP = "sleep"
+CARD_ORDER_SWAP = "order_swap"
+CARD_HAND_SWAP = "hand_swap"
+
+CARD_LABELS = {
+    CARD_LOTTERY: "宝くじ",
+    CARD_PROMOTION: "昇格",
+    CARD_WALK: "散歩",
+    CARD_SLEEP: "ドカ寝",
+    CARD_ORDER_SWAP: "順番入れ替え",
+    CARD_HAND_SWAP: "カード交換",
+}
+
+DEFAULT_CARD_COUNTS = {
+    CARD_LOTTERY: 10,
+    CARD_PROMOTION: 10,
+    CARD_WALK: 15,
+    CARD_SLEEP: 15,
+    CARD_ORDER_SWAP: 10,
+    CARD_HAND_SWAP: 10,
+}
+
 DEFAULT_REST_EVENTS = {
     "lottery": {"name": "宝くじ", "success_rate": 1 / 6, "amount": 300_000},
     "walk": {"name": "散歩", "success_rate": 0.5, "amount": 10_000},

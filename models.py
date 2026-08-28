@@ -36,6 +36,13 @@ class Player:
 
 
 @dataclass
+class CardState:
+    deck: list[str]
+    discard: list[str]
+    hands: list[list[str]]
+
+
+@dataclass
 class DelayedEvent:
     due_turn: int
     amount: int
@@ -56,6 +63,9 @@ class SimulationConfig:
     rest_events: dict[str, dict[str, float | int | str]]
     jobs: dict[str, Job]
     seed: int | None = None
+    initial_hand_size: int = 2
+    mulligan_enabled: bool = True
+    card_counts: dict[str, int] = field(default_factory=dict)
     action_ai_mode: str = "rollout"
     rollout_count: int = 100
     normal_guard_build_bonus: float = 1 / 6
