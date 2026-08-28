@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 import pandas as pd
 import streamlit as st
@@ -26,7 +27,7 @@ from config import (
 )
 from data_loader import find_excel_file, load_game_data
 from models import Action, Job, SimulationConfig
-from simulation import run_monte_carlo, run_promotion_rate_comparison
+from simulation import run_ai_mode_comparison, run_monte_carlo, run_promotion_rate_comparison
 
 
 st.set_page_config(page_title="城建築モンテカルロシミュレーター", layout="wide")
@@ -92,6 +93,7 @@ def main() -> None:
 
     if "last_result" in st.session_state and "last_config" in st.session_state:
         render_results(st.session_state["last_result"])
+        render_ai_mode_comparison(st.session_state["last_config"])
         render_promotion_comparison(st.session_state["last_config"])
 
 
@@ -120,13 +122,17 @@ def render_simulation_settings(jobs: dict[str, Job]) -> dict:
     st.subheader("行動AI")
     ai_label = st.radio(
         "評価方法",
-        ["残りターン期待総収入最大化", "即時期待値最大化"],
+        ["残りターン期待総収入最大化", "即時期待値最大化", "城完成率最大化"],
         index=0,
         horizontal=True,
     )
     rollout_count = st.selectbox("Rollout回数", [10, 50, 100, 500], index=2)
     st.caption("Rollout回数を増やすと精度は上がりますが、処理時間も増加します。内部rolloutでは即時期待値ポリシーを使い、rolloutの再帰は行いません。")
-    action_ai_mode = "rollout" if ai_label == "残りターン期待総収入最大化" else "immediate"
+    action_ai_mode = {
+        "即時期待値最大化": "immediate",
+        "残りターン期待総収入最大化": "rollout",
+        "城完成率最大化": "completion",
+    }[ai_label]
 
     return {
         "trials": int(trials),
@@ -380,6 +386,34 @@ def render_results(result: dict) -> None:
         for row in result["promotion_by_job"]
     ]
     st.dataframe(pd.DataFrame(promotion_rows), use_container_width=True)
+
+
+def render_ai_mode_comparison(config: SimulationConfig) -> None:
+    with st.expander("行動AI方式 一括比較", expanded=False):
+        st.caption("同じ設定・同じseedで3つのAI方式を比較します。各方式で同じseedから再実行します。")
+        if not st.button("行動AI方式を比較"):
+            return
+        started = time.perf_counter()
+        with st.spinner("行動AI方式を比較中..."):
+            rows = run_ai_mode_comparison(config)
+        elapsed = time.perf_counter() - started
+        df = pd.DataFrame([
+            {
+                "AI方式": row["ai_label"],
+                "クリア率": row["clear_rate"],
+                "平均クリアターン": row["average_clear_turn"],
+                "平均総収入": row["average_total_income"],
+                "15ターン終了時平均所持金": row["average_final_money"],
+                "平均建築進捗": row["average_final_progress"],
+                "宝くじ選択回数": row["lottery_selected"],
+                "護衛選択回数": row["guard_selected"],
+                "大工建築費半減選択回数": row["carpenter_build_half_selected"],
+                "昇格挑戦回数": row["promotion_attempts"],
+            }
+            for row in rows
+        ])
+        st.dataframe(df, use_container_width=True)
+        st.caption(f"処理時間: {elapsed:.2f}秒")
 
 
 def render_promotion_comparison(config: SimulationConfig) -> None:

@@ -8,6 +8,7 @@ from models import Action, DelayedEvent, Player, SimulationConfig
 
 AI_MODE_IMMEDIATE = "immediate"
 AI_MODE_ROLLOUT = "rollout"
+AI_MODE_COMPLETION = "completion"
 
 
 def run_monte_carlo(config: SimulationConfig) -> dict:
@@ -62,6 +63,61 @@ def run_promotion_rate_comparison(config: SimulationConfig, rates: list[float]) 
             "lottery_income_share": result["lottery_income_share"],
         })
     return rows
+
+
+def run_ai_mode_comparison(config: SimulationConfig) -> list[dict]:
+    rows: list[dict] = []
+    modes = [
+        (AI_MODE_IMMEDIATE, "即時期待値最大化"),
+        (AI_MODE_ROLLOUT, "残りターン期待総収入最大化"),
+        (AI_MODE_COMPLETION, "城完成率最大化"),
+    ]
+    for mode, label in modes:
+        compared = _copy_config(config, action_ai_mode=mode)
+        result = run_monte_carlo(compared)
+        rows.append({
+            "ai_mode": mode,
+            "ai_label": label,
+            "clear_rate": result["clear_rate"],
+            "average_clear_turn": result["average_clear_turn"],
+            "average_total_income": result["average_total_income"],
+            "average_final_money": result["average_final_money"],
+            "average_final_progress": result["average_final_progress"],
+            "lottery_selected": result["lottery_selected"],
+            "guard_selected": result["guard_selected"],
+            "carpenter_build_half_selected": result["carpenter_build_half_selected"],
+            "promotion_attempts": result["promotion_attempts"],
+        })
+    return rows
+
+
+def _copy_config(config: SimulationConfig, **overrides: object) -> SimulationConfig:
+    values = {
+        "trials": config.trials,
+        "max_turns": config.max_turns,
+        "player_jobs": list(config.player_jobs),
+        "castle_costs": list(config.castle_costs),
+        "build_success_rate": config.build_success_rate,
+        "build_failure_loss_rate": config.build_failure_loss_rate,
+        "initial_stamina": config.initial_stamina,
+        "base_max_stamina": config.base_max_stamina,
+        "knight_stamina_bonus": config.knight_stamina_bonus,
+        "rest_events": {key: dict(value) for key, value in config.rest_events.items()},
+        "jobs": config.jobs,
+        "seed": config.seed,
+        "action_ai_mode": config.action_ai_mode,
+        "rollout_count": config.rollout_count,
+        "normal_guard_build_bonus": config.normal_guard_build_bonus,
+        "advanced_guard_build_bonus": config.advanced_guard_build_bonus,
+        "normal_carpenter_build_discount": config.normal_carpenter_build_discount,
+        "advanced_carpenter_build_discount": config.advanced_carpenter_build_discount,
+        "carpenter_build_cost_multiplier": config.carpenter_build_cost_multiplier,
+        "normal_merchant_turn_income": config.normal_merchant_turn_income,
+        "advanced_merchant_turn_income": config.advanced_merchant_turn_income,
+        "normal_neet_turn_recovery": config.normal_neet_turn_recovery,
+    }
+    values.update(overrides)
+    return SimulationConfig(**values)
 
 
 def _run_single_game(config: SimulationConfig, rng: random.Random) -> dict:
@@ -183,14 +239,27 @@ def _choose_action(
     current_turn_build_success_bonus: float,
     current_turn_build_cost_halved: bool,
 ) -> Action:
-    if policy_mode != AI_MODE_ROLLOUT or config.rollout_count <= 0:
+    if policy_mode not in (AI_MODE_ROLLOUT, AI_MODE_COMPLETION) or config.rollout_count <= 0:
         return _choose_best_action(actions, money, rng)
     scored = [
-        (action, _rollout_action_value(config, action, players, player_index, money, progress, delayed, turn, max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved))
+        (
+            action,
+            _rollout_action_outcome(
+                config, action, players, player_index, money, progress, delayed, turn,
+                max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved,
+            ),
+        )
         for action in actions
     ]
-    best = max(score for _, score in scored)
-    return rng.choice([action for action, score in scored if score == best])
+    if policy_mode == AI_MODE_COMPLETION:
+        best = max((score["completion_probability"], score["expected_total_income"]) for _, score in scored)
+        return rng.choice([
+            action
+            for action, score in scored
+            if (score["completion_probability"], score["expected_total_income"]) == best
+        ])
+    best_income = max(score["expected_total_income"] for _, score in scored)
+    return rng.choice([action for action, score in scored if score["expected_total_income"] == best_income])
 
 
 def _choose_best_action(actions: list[Action], money: int, rng: random.Random) -> Action:
@@ -200,7 +269,7 @@ def _choose_best_action(actions: list[Action], money: int, rng: random.Random) -
     return rng.choice(candidates)
 
 
-def _rollout_action_value(
+def _rollout_action_outcome(
     config: SimulationConfig,
     action: Action,
     players: list[Player],
@@ -213,8 +282,9 @@ def _rollout_action_value(
     rng: random.Random,
     current_turn_build_success_bonus: float,
     current_turn_build_cost_halved: bool,
-) -> float:
+) -> dict[str, float]:
     total = 0.0
+    completed = 0
     for _ in range(config.rollout_count):
         rollout_rng = random.Random(rng.randrange(2**63))
         rollout_players = _clone_players(players)
@@ -250,7 +320,12 @@ def _rollout_action_value(
             current_turn_build_cost_halved=rollout_build_cost_halved,
         )
         total += rollout_stats["income_total"]
-    return total / config.rollout_count
+        if rollout_stats["cleared"]:
+            completed += 1
+    return {
+        "completion_probability": completed / config.rollout_count,
+        "expected_total_income": total / config.rollout_count,
+    }
 
 
 def _expected_action_income(action: Action, money: int) -> float:
@@ -324,15 +399,26 @@ def _choose_rest_event(
     current_turn_build_cost_halved: bool,
 ) -> str:
     candidates = _available_rest_events(config, players[player_index], turn)
-    if policy_mode != AI_MODE_ROLLOUT or config.rollout_count <= 0:
+    if policy_mode not in (AI_MODE_ROLLOUT, AI_MODE_COMPLETION) or config.rollout_count <= 0:
         values = {event_name: _expected_rest_income(config, event_name) for event_name in candidates}
-    else:
-        values = {
-            event_name: _rollout_rest_value(config, event_name, players, player_index, money, progress, delayed, turn, max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved)
+        best = max(values.values())
+        return rng.choice([name for name, value in values.items() if value == best])
+    scored = {
+        event_name: _rollout_rest_outcome(
+            config, event_name, players, player_index, money, progress, delayed, turn,
+            max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved,
+        )
             for event_name in candidates
-        }
-    best = max(values.values())
-    return rng.choice([name for name, value in values.items() if value == best])
+    }
+    if policy_mode == AI_MODE_COMPLETION:
+        best = max((score["completion_probability"], score["expected_total_income"]) for score in scored.values())
+        return rng.choice([
+            event_name
+            for event_name, score in scored.items()
+            if (score["completion_probability"], score["expected_total_income"]) == best
+        ])
+    best_income = max(score["expected_total_income"] for score in scored.values())
+    return rng.choice([event_name for event_name, score in scored.items() if score["expected_total_income"] == best_income])
 
 
 def _available_rest_events(config: SimulationConfig, player: Player, turn: int) -> list[str]:
@@ -351,7 +437,7 @@ def _expected_rest_income(config: SimulationConfig, event_name: str) -> float:
     return 0.0
 
 
-def _rollout_rest_value(
+def _rollout_rest_outcome(
     config: SimulationConfig,
     event_name: str,
     players: list[Player],
@@ -364,8 +450,9 @@ def _rollout_rest_value(
     rng: random.Random,
     current_turn_build_success_bonus: float,
     current_turn_build_cost_halved: bool,
-) -> float:
+) -> dict[str, float]:
     total = 0.0
+    completed = 0
     for _ in range(config.rollout_count):
         rollout_rng = random.Random(rng.randrange(2**63))
         rollout_players = _clone_players(players)
@@ -389,7 +476,12 @@ def _rollout_rest_value(
             current_turn_build_cost_halved=current_turn_build_cost_halved,
         )
         total += rollout_stats["income_total"]
-    return total / config.rollout_count
+        if rollout_stats["cleared"]:
+            completed += 1
+    return {
+        "completion_probability": completed / config.rollout_count,
+        "expected_total_income": total / config.rollout_count,
+    }
 
 
 def _execute_rest_event(event_name: str, config: SimulationConfig, player: Player, turn: int, max_stamina: int, rng: random.Random, stats: dict, money: int) -> int:
@@ -716,6 +808,7 @@ def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
         "average_clear_turn": mean(aggregate["clear_turns"]) if aggregate["clear_turns"] else None,
         "clear_turn_distribution": dict(Counter(aggregate["clear_turns"])),
         "average_money_by_turn": [value / trials for value in aggregate["turn_money_sums"]],
+        "average_final_money": aggregate["turn_money_sums"][max_turns - 1] / trials if trials and max_turns else 0,
         "average_final_progress": aggregate["progress_sum"] / trials if trials else 0,
         "stage_reach_rates": {stage: count / trials for stage, count in enumerate(aggregate["reached_counts"])},
         "build_attempts": aggregate["build_attempts"],
