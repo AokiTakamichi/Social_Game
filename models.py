@@ -66,3 +66,5 @@ class SimulationConfig:
     normal_merchant_turn_income: int = 5_000
     advanced_merchant_turn_income: int = 10_000
     normal_neet_turn_recovery: int = 1
+    normal_neet_pray_lottery_multiplier: float = 3.0
+    advanced_neet_pray_lottery_multiplier: float = 4.0

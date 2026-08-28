@@ -50,6 +50,8 @@ def run_promotion_rate_comparison(config: SimulationConfig, rates: list[float]) 
             normal_merchant_turn_income=config.normal_merchant_turn_income,
             advanced_merchant_turn_income=config.advanced_merchant_turn_income,
             normal_neet_turn_recovery=config.normal_neet_turn_recovery,
+            normal_neet_pray_lottery_multiplier=config.normal_neet_pray_lottery_multiplier,
+            advanced_neet_pray_lottery_multiplier=config.advanced_neet_pray_lottery_multiplier,
         )
         result = run_monte_carlo(compared)
         rows.append({
@@ -115,6 +117,8 @@ def _copy_config(config: SimulationConfig, **overrides: object) -> SimulationCon
         "normal_merchant_turn_income": config.normal_merchant_turn_income,
         "advanced_merchant_turn_income": config.advanced_merchant_turn_income,
         "normal_neet_turn_recovery": config.normal_neet_turn_recovery,
+        "normal_neet_pray_lottery_multiplier": config.normal_neet_pray_lottery_multiplier,
+        "advanced_neet_pray_lottery_multiplier": config.advanced_neet_pray_lottery_multiplier,
     }
     values.update(overrides)
     return SimulationConfig(**values)
@@ -182,9 +186,11 @@ def _simulate_from(
     reached: list[bool] | None = None,
     current_turn_build_success_bonus: float = 0.0,
     current_turn_build_cost_halved: bool = False,
+    current_lottery_multiplier: float = 1.0,
 ) -> tuple[int, int, list[DelayedEvent], list[int]]:
     turn_end_money: list[int] = []
     player_count = len(players)
+    lottery_multiplier = current_lottery_multiplier
 
     for turn in range(start_turn, config.max_turns + 1):
         if start_player_index == 0:
@@ -204,13 +210,13 @@ def _simulate_from(
             actions = (job.advanced_actions if player.promoted else job.normal_actions) if job else []
             available = [a for a in actions if player.stamina - a.stamina_cost >= 1 and a.effect_type != "unsupported"]
             if available:
-                action = _choose_action(config, available, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved)
-                money, build_success_bonus, build_cost_halved = _execute_action(action, config, player, money, turn, delayed, max_stamina, rng, stats, build_success_bonus, build_cost_halved)
+                action = _choose_action(config, available, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
+                money, build_success_bonus, build_cost_halved, lottery_multiplier = _execute_action(action, config, player, money, turn, delayed, max_stamina, rng, stats, build_success_bonus, build_cost_halved, lottery_multiplier)
             else:
                 stats["rests"] += 1
                 player.stamina = min(max_stamina, player.stamina + 2)
-                event_name = _choose_rest_event(config, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved)
-                money = _execute_rest_event(event_name, config, player, turn, max_stamina, rng, stats, money)
+                event_name = _choose_rest_event(config, players, player_index, money, progress, delayed, turn, max_stamina, rng, policy_mode, build_success_bonus, build_cost_halved, lottery_multiplier)
+                money, lottery_multiplier = _execute_rest_event(event_name, config, player, turn, max_stamina, rng, stats, money, lottery_multiplier)
 
         progress, money = _execute_build(config, rng, stats, progress, money, reached, build_success_bonus, build_cost_halved, players)
         if collect_turn_money:
@@ -238,6 +244,7 @@ def _choose_action(
     policy_mode: str,
     current_turn_build_success_bonus: float,
     current_turn_build_cost_halved: bool,
+    current_lottery_multiplier: float,
 ) -> Action:
     if policy_mode not in (AI_MODE_ROLLOUT, AI_MODE_COMPLETION) or config.rollout_count <= 0:
         return _choose_best_action(actions, money, rng)
@@ -247,6 +254,7 @@ def _choose_action(
             _rollout_action_outcome(
                 config, action, players, player_index, money, progress, delayed, turn,
                 max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved,
+                current_lottery_multiplier,
             ),
         )
         for action in actions
@@ -282,6 +290,7 @@ def _rollout_action_outcome(
     rng: random.Random,
     current_turn_build_success_bonus: float,
     current_turn_build_cost_halved: bool,
+    current_lottery_multiplier: float,
 ) -> dict[str, float]:
     total = 0.0
     completed = 0
@@ -295,8 +304,9 @@ def _rollout_action_outcome(
         rollout_money = money
         rollout_build_success_bonus = current_turn_build_success_bonus
         rollout_build_cost_halved = current_turn_build_cost_halved
+        rollout_lottery_multiplier = current_lottery_multiplier
         if rollout_rng.random() < action.success_rate:
-            income, rollout_money, bonus_delta, half_delta = _apply_action_success(action, config, rollout_money, turn, rollout_delayed, rollout_player, max_stamina, rollout_build_cost_halved)
+            income, rollout_money, bonus_delta, half_delta, rollout_lottery_multiplier, _prayer_tier = _apply_action_success(action, config, rollout_money, turn, rollout_delayed, rollout_player, max_stamina, rollout_build_cost_halved, rollout_lottery_multiplier)
             rollout_build_success_bonus += bonus_delta
             rollout_build_cost_halved = rollout_build_cost_halved or half_delta
             rollout_stats["income_total"] += income
@@ -318,6 +328,7 @@ def _rollout_action_outcome(
             collect_turn_money=False,
             current_turn_build_success_bonus=rollout_build_success_bonus,
             current_turn_build_cost_halved=rollout_build_cost_halved,
+            current_lottery_multiplier=rollout_lottery_multiplier,
         )
         total += rollout_stats["income_total"]
         if rollout_stats["cleared"]:
@@ -341,7 +352,7 @@ def _expected_action_income(action: Action, money: int) -> float:
     return action.success_rate * action.amount
 
 
-def _execute_action(action: Action, config: SimulationConfig, player: Player, money: int, turn: int, delayed: list[DelayedEvent], max_stamina: int, rng: random.Random, stats: dict, build_success_bonus: float, build_cost_halved: bool) -> tuple[int, float, bool]:
+def _execute_action(action: Action, config: SimulationConfig, player: Player, money: int, turn: int, delayed: list[DelayedEvent], max_stamina: int, rng: random.Random, stats: dict, build_success_bonus: float, build_cost_halved: bool, lottery_multiplier: float) -> tuple[int, float, bool, float]:
     player.stamina -= action.stamina_cost
     key = f"{action.job}:{action.name}"
     stats["action_selected"][key] += 1
@@ -350,38 +361,42 @@ def _execute_action(action: Action, config: SimulationConfig, player: Player, mo
         stats["guard_selected"] += 1
     if _is_carpenter_build_cost_multiplier_action(action):
         stats["carpenter_build_half_selected"] += 1
+    if _is_neet_pray_action(action):
+        stats["neet_pray_selected"] += 1
     if rng.random() < action.success_rate:
         stats["action_success"][key] += 1
-        income, money, bonus_delta, half_delta = _apply_action_success(action, config, money, turn, delayed, player, max_stamina, build_cost_halved)
+        income, money, bonus_delta, half_delta, lottery_multiplier, prayer_tier = _apply_action_success(action, config, money, turn, delayed, player, max_stamina, build_cost_halved, lottery_multiplier)
         build_success_bonus += bonus_delta
         build_cost_halved = build_cost_halved or half_delta
         _record_guard_success_stats(action, bonus_delta, stats)
         _record_carpenter_half_stats(action, half_delta, stats)
+        _record_neet_prayer_stats(action, prayer_tier, stats)
         stats["income_by_job"][action.job] += income
         stats["income_by_source"][action.job] += income
         stats["income_total"] += income
         stats[f"{action.tier}_action_income_by_job"][action.job] += income
-    return money, build_success_bonus, build_cost_halved
+    return money, build_success_bonus, build_cost_halved, lottery_multiplier
 
 
-def _apply_action_success(action: Action, config: SimulationConfig, money: int, turn: int, delayed: list[DelayedEvent], player: Player, max_stamina: int, build_cost_halved: bool) -> tuple[int, int, float, bool]:
+def _apply_action_success(action: Action, config: SimulationConfig, money: int, turn: int, delayed: list[DelayedEvent], player: Player, max_stamina: int, build_cost_halved: bool, lottery_multiplier: float) -> tuple[int, int, float, bool, float, str | None]:
     bonus_delta = _guard_build_bonus(action, config)
     half_delta = False
+    lottery_multiplier, prayer_tier = _apply_neet_prayer(action, config, lottery_multiplier)
     if action.effect_type == "multiplier" and action.multiplier is not None:
         new_money = int(round(money * action.multiplier))
-        return new_money - money, new_money, bonus_delta, half_delta
+        return new_money - money, new_money, bonus_delta, half_delta, lottery_multiplier, prayer_tier
     if action.effect_type == "delayed_investment":
         invested = money // 2
         money -= invested
         delayed.append(DelayedEvent(turn + action.delay_turns, int(round(invested * action.delay_multiplier)), action.job))
-        return 0, money, bonus_delta, half_delta
+        return 0, money, bonus_delta, half_delta, lottery_multiplier, prayer_tier
     if action.effect_type == "stamina_recovery":
         player.stamina = min(max_stamina, player.stamina + action.amount)
-        return 0, money, bonus_delta, half_delta
+        return 0, money, bonus_delta, half_delta, lottery_multiplier, prayer_tier
     if action.effect_type == "build_cost_multiplier":
         half_delta = not build_cost_halved
-        return 0, money, bonus_delta, half_delta
-    return action.amount, money + action.amount, bonus_delta, half_delta
+        return 0, money, bonus_delta, half_delta, lottery_multiplier, prayer_tier
+    return action.amount, money + action.amount, bonus_delta, half_delta, lottery_multiplier, prayer_tier
 
 
 def _choose_rest_event(
@@ -397,16 +412,18 @@ def _choose_rest_event(
     policy_mode: str,
     current_turn_build_success_bonus: float,
     current_turn_build_cost_halved: bool,
+    current_lottery_multiplier: float,
 ) -> str:
     candidates = _available_rest_events(config, players[player_index], turn)
     if policy_mode not in (AI_MODE_ROLLOUT, AI_MODE_COMPLETION) or config.rollout_count <= 0:
-        values = {event_name: _expected_rest_income(config, event_name) for event_name in candidates}
+        values = {event_name: _expected_rest_income(config, event_name, current_lottery_multiplier) for event_name in candidates}
         best = max(values.values())
         return rng.choice([name for name, value in values.items() if value == best])
     scored = {
         event_name: _rollout_rest_outcome(
             config, event_name, players, player_index, money, progress, delayed, turn,
             max_stamina, rng, current_turn_build_success_bonus, current_turn_build_cost_halved,
+            current_lottery_multiplier,
         )
             for event_name in candidates
     }
@@ -428,10 +445,10 @@ def _available_rest_events(config: SimulationConfig, player: Player, turn: int) 
     return events
 
 
-def _expected_rest_income(config: SimulationConfig, event_name: str) -> float:
+def _expected_rest_income(config: SimulationConfig, event_name: str, lottery_multiplier: float = 1.0) -> float:
     rest = config.rest_events
     if event_name == "lottery":
-        return float(rest["lottery"]["success_rate"]) * int(rest["lottery"]["amount"])
+        return _effective_lottery_success_rate(config, lottery_multiplier) * int(rest["lottery"]["amount"])
     if event_name == "walk":
         return float(rest["walk"]["success_rate"]) * int(rest["walk"]["amount"])
     return 0.0
@@ -450,6 +467,7 @@ def _rollout_rest_outcome(
     rng: random.Random,
     current_turn_build_success_bonus: float,
     current_turn_build_cost_halved: bool,
+    current_lottery_multiplier: float,
 ) -> dict[str, float]:
     total = 0.0
     completed = 0
@@ -458,7 +476,7 @@ def _rollout_rest_outcome(
         rollout_players = _clone_players(players)
         rollout_delayed = _clone_delayed(delayed)
         rollout_stats = _empty_single()
-        rollout_money = _execute_rest_event(event_name, config, rollout_players[player_index], turn, max_stamina, rollout_rng, rollout_stats, money)
+        rollout_money, rollout_lottery_multiplier = _execute_rest_event(event_name, config, rollout_players[player_index], turn, max_stamina, rollout_rng, rollout_stats, money, current_lottery_multiplier)
         _simulate_from(
             config=config,
             rng=rollout_rng,
@@ -474,6 +492,7 @@ def _rollout_rest_outcome(
             collect_turn_money=False,
             current_turn_build_success_bonus=current_turn_build_success_bonus,
             current_turn_build_cost_halved=current_turn_build_cost_halved,
+            current_lottery_multiplier=rollout_lottery_multiplier,
         )
         total += rollout_stats["income_total"]
         if rollout_stats["cleared"]:
@@ -484,14 +503,25 @@ def _rollout_rest_outcome(
     }
 
 
-def _execute_rest_event(event_name: str, config: SimulationConfig, player: Player, turn: int, max_stamina: int, rng: random.Random, stats: dict, money: int) -> int:
+def _execute_rest_event(event_name: str, config: SimulationConfig, player: Player, turn: int, max_stamina: int, rng: random.Random, stats: dict, money: int, lottery_multiplier: float = 1.0) -> tuple[int, float]:
     rest = config.rest_events
     if event_name == "lottery":
         stats["lottery_selected"] += 1
-        if rng.random() < float(rest["lottery"]["success_rate"]):
+        boosted = lottery_multiplier > 1.0
+        if boosted:
+            stats["boosted_lottery_attempts"] += 1
+        else:
+            stats["unboosted_lottery_attempts"] += 1
+        success_rate = _effective_lottery_success_rate(config, lottery_multiplier)
+        lottery_multiplier = 1.0
+        if rng.random() < success_rate:
             amount = int(rest["lottery"]["amount"])
             money += amount
             stats["lottery_wins"] += 1
+            if boosted:
+                stats["boosted_lottery_wins"] += 1
+            else:
+                stats["unboosted_lottery_wins"] += 1
             stats["lottery_income"] += amount
             stats["income_total"] += amount
             stats["income_by_source"][_rest_name(rest, "lottery", "宝くじ")] += amount
@@ -516,7 +546,7 @@ def _execute_rest_event(event_name: str, config: SimulationConfig, player: Playe
             stats["promotion_success_jobs"][player.job_name] += 1
             stats["promotion_turns_by_job"][player.job_name].append(turn)
             stats["promotion_turns"].append(turn)
-    return money
+    return money, lottery_multiplier
 
 
 def _execute_build(config: SimulationConfig, rng: random.Random, stats: dict, progress: int, money: int, reached: list[bool] | None, build_success_bonus: float, build_cost_halved: bool, players: list[Player] | None = None) -> tuple[int, int]:
@@ -622,6 +652,10 @@ def _is_neet_job_name(job_name: str) -> bool:
     return job_name == neet or neet in job_name
 
 
+def _is_neet_pray_action(action: Action) -> bool:
+    return _is_neet_job_name(action.job) and "\u795e\u306b\u7948\u308b" in action.name
+
+
 def _is_guard_action(action: Action) -> bool:
     return _is_knight_job_name(action.job) and "\u8b77\u885b" in action.name
 
@@ -636,6 +670,24 @@ def _guard_build_bonus(action: Action, config: SimulationConfig) -> float:
     if action.tier == "advanced":
         return config.advanced_guard_build_bonus
     return config.normal_guard_build_bonus
+
+
+def _apply_neet_prayer(action: Action, config: SimulationConfig, lottery_multiplier: float) -> tuple[float, str | None]:
+    if not _is_neet_pray_action(action):
+        return lottery_multiplier, None
+    multiplier = (
+        config.advanced_neet_pray_lottery_multiplier
+        if action.tier == "advanced"
+        else config.normal_neet_pray_lottery_multiplier
+    )
+    multiplier = max(1.0, float(multiplier))
+    if multiplier > lottery_multiplier:
+        return multiplier, action.tier
+    return lottery_multiplier, None
+
+
+def _effective_lottery_success_rate(config: SimulationConfig, lottery_multiplier: float = 1.0) -> float:
+    return min(1.0, float(config.rest_events["lottery"]["success_rate"]) * max(1.0, lottery_multiplier))
 
 
 def _record_guard_success_stats(action: Action, bonus_delta: float, stats: dict) -> None:
@@ -653,6 +705,16 @@ def _record_carpenter_half_stats(action: Action, half_delta: bool, stats: dict) 
     stats["carpenter_build_half_success"] += 1
     if half_delta:
         stats["carpenter_build_half_effect_events"] += 1
+
+
+def _record_neet_prayer_stats(action: Action, prayer_tier: str | None, stats: dict) -> None:
+    if not _is_neet_pray_action(action):
+        return
+    stats["neet_pray_success"] += 1
+    if prayer_tier == "advanced":
+        stats["advanced_neet_lottery_multiplier_activations"] += 1
+    elif prayer_tier == "normal":
+        stats["normal_neet_lottery_multiplier_activations"] += 1
 
 
 def _clone_players(players: list[Player]) -> list[Player]:
@@ -696,6 +758,10 @@ def _empty_single() -> dict:
         "merchant_passive_income_total": 0,
         "neet_passive_recovery_total": 0,
         "advanced_neet_full_recovery_events": 0,
+        "neet_pray_selected": 0,
+        "neet_pray_success": 0,
+        "normal_neet_lottery_multiplier_activations": 0,
+        "advanced_neet_lottery_multiplier_activations": 0,
         "action_selected": Counter(),
         "action_success": Counter(),
         "income_by_job": defaultdict(int),
@@ -704,6 +770,10 @@ def _empty_single() -> dict:
         "rests": 0,
         "lottery_selected": 0,
         "lottery_wins": 0,
+        "boosted_lottery_attempts": 0,
+        "boosted_lottery_wins": 0,
+        "unboosted_lottery_attempts": 0,
+        "unboosted_lottery_wins": 0,
         "lottery_income": 0,
         "walk_selected": 0,
         "walk_success": 0,
@@ -763,7 +833,12 @@ def _merge_result(aggregate: dict, result: dict) -> None:
         "carpenter_build_half_success", "carpenter_build_half_effect_events",
         "carpenter_build_half_applied_builds", "merchant_passive_income_total",
         "neet_passive_recovery_total", "advanced_neet_full_recovery_events",
-        "lottery_selected", "lottery_wins", "lottery_income", "walk_selected",
+        "neet_pray_selected", "neet_pray_success",
+        "normal_neet_lottery_multiplier_activations",
+        "advanced_neet_lottery_multiplier_activations",
+        "lottery_selected", "lottery_wins", "boosted_lottery_attempts",
+        "boosted_lottery_wins", "unboosted_lottery_attempts",
+        "unboosted_lottery_wins", "lottery_income", "walk_selected",
         "walk_success", "walk_income", "sleep_selected", "promotion_attempts", "promotion_success",
         "promotion_attempt_games", "promotion_success_games",
     ):
@@ -787,6 +862,8 @@ def _merge_result(aggregate: dict, result: dict) -> None:
 def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
     clear_rate = aggregate["cleared_count"] / trials if trials else 0
     lottery_rate = aggregate["lottery_wins"] / aggregate["lottery_selected"] if aggregate["lottery_selected"] else 0
+    boosted_lottery_rate = aggregate["boosted_lottery_wins"] / aggregate["boosted_lottery_attempts"] if aggregate["boosted_lottery_attempts"] else 0
+    unboosted_lottery_rate = aggregate["unboosted_lottery_wins"] / aggregate["unboosted_lottery_attempts"] if aggregate["unboosted_lottery_attempts"] else 0
     lottery_share = aggregate["lottery_income"] / aggregate["income_total"] if aggregate["income_total"] else 0
     promotion_attempt_game_rate = aggregate["promotion_attempt_games"] / trials if trials else 0
     promotion_success_rate = aggregate["promotion_success"] / aggregate["promotion_attempts"] if aggregate["promotion_attempts"] else 0
@@ -834,6 +911,10 @@ def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
         "merchant_passive_income_total": aggregate["merchant_passive_income_total"],
         "neet_passive_recovery_total": aggregate["neet_passive_recovery_total"],
         "advanced_neet_full_recovery_events": aggregate["advanced_neet_full_recovery_events"],
+        "neet_pray_selected": aggregate["neet_pray_selected"],
+        "neet_pray_success": aggregate["neet_pray_success"],
+        "normal_neet_lottery_multiplier_activations": aggregate["normal_neet_lottery_multiplier_activations"],
+        "advanced_neet_lottery_multiplier_activations": aggregate["advanced_neet_lottery_multiplier_activations"],
         "action_selected": dict(aggregate["action_selected"]),
         "action_success": dict(aggregate["action_success"]),
         "income_by_job": dict(aggregate["income_by_job"]),
@@ -843,6 +924,12 @@ def _finalize(aggregate: dict, trials: int, max_turns: int) -> dict:
         "lottery_selected": aggregate["lottery_selected"],
         "lottery_wins": aggregate["lottery_wins"],
         "lottery_win_rate": lottery_rate,
+        "boosted_lottery_attempts": aggregate["boosted_lottery_attempts"],
+        "boosted_lottery_wins": aggregate["boosted_lottery_wins"],
+        "boosted_lottery_win_rate": boosted_lottery_rate,
+        "unboosted_lottery_attempts": aggregate["unboosted_lottery_attempts"],
+        "unboosted_lottery_wins": aggregate["unboosted_lottery_wins"],
+        "unboosted_lottery_win_rate": unboosted_lottery_rate,
         "lottery_income": aggregate["lottery_income"],
         "lottery_income_share": lottery_share,
         "walk_selected": aggregate["walk_selected"],

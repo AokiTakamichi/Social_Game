@@ -13,6 +13,7 @@ from config import (
     DEFAULT_ADVANCED_GUARD_BUILD_BONUS,
     DEFAULT_ADVANCED_CARPENTER_BUILD_DISCOUNT,
     DEFAULT_ADVANCED_MERCHANT_TURN_INCOME,
+    DEFAULT_ADVANCED_NEET_PRAY_LOTTERY_MULTIPLIER,
     DEFAULT_CARPENTER_BUILD_COST_MULTIPLIER,
     DEFAULT_INITIAL_STAMINA,
     DEFAULT_KNIGHT_STAMINA_BONUS,
@@ -22,6 +23,7 @@ from config import (
     DEFAULT_NORMAL_GUARD_BUILD_BONUS,
     DEFAULT_NORMAL_MERCHANT_TURN_INCOME,
     DEFAULT_NORMAL_NEET_TURN_RECOVERY,
+    DEFAULT_NORMAL_NEET_PRAY_LOTTERY_MULTIPLIER,
     DEFAULT_PLAYER_COUNT,
     DEFAULT_TRIALS,
 )
@@ -77,6 +79,8 @@ def main() -> None:
             normal_merchant_turn_income=passive_settings["normal_merchant_turn_income"],
             advanced_merchant_turn_income=passive_settings["advanced_merchant_turn_income"],
             normal_neet_turn_recovery=passive_settings["normal_neet_turn_recovery"],
+            normal_neet_pray_lottery_multiplier=passive_settings["normal_neet_pray_lottery_multiplier"],
+            advanced_neet_pray_lottery_multiplier=passive_settings["advanced_neet_pray_lottery_multiplier"],
             initial_stamina=stamina_settings["initial"],
             base_max_stamina=stamina_settings["maximum"],
             knight_stamina_bonus=stamina_settings["knight_bonus"],
@@ -195,6 +199,22 @@ def render_passive_settings() -> dict:
     advanced_merchant = col5.number_input("上級商人 ターン開始収入", min_value=0, value=DEFAULT_ADVANCED_MERCHANT_TURN_INCOME, step=1_000)
     normal_neet = col6.number_input("通常ニート ターン開始回復", min_value=0, value=DEFAULT_NORMAL_NEET_TURN_RECOVERY, step=1)
 
+    col7, col8 = st.columns(2)
+    normal_neet_pray_lottery_multiplier = col7.number_input(
+        "通常ニート 神に祈る成功時 宝くじ確率倍率",
+        min_value=1.0,
+        value=DEFAULT_NORMAL_NEET_PRAY_LOTTERY_MULTIPLIER,
+        step=0.1,
+        format="%.2f",
+    )
+    advanced_neet_pray_lottery_multiplier = col8.number_input(
+        "上級ニート 神に祈る成功時 宝くじ確率倍率",
+        min_value=1.0,
+        value=DEFAULT_ADVANCED_NEET_PRAY_LOTTERY_MULTIPLIER,
+        step=0.1,
+        format="%.2f",
+    )
+
     return {
         "normal_carpenter_build_discount": int(normal_carpenter),
         "advanced_carpenter_build_discount": int(advanced_carpenter),
@@ -202,6 +222,8 @@ def render_passive_settings() -> dict:
         "normal_merchant_turn_income": int(normal_merchant),
         "advanced_merchant_turn_income": int(advanced_merchant),
         "normal_neet_turn_recovery": int(normal_neet),
+        "normal_neet_pray_lottery_multiplier": float(normal_neet_pray_lottery_multiplier),
+        "advanced_neet_pray_lottery_multiplier": float(advanced_neet_pray_lottery_multiplier),
     }
 
 
@@ -386,6 +408,18 @@ def render_results(result: dict) -> None:
         for row in result["promotion_by_job"]
     ]
     st.dataframe(pd.DataFrame(promotion_rows), use_container_width=True)
+
+    st.subheader("神に祈る / 宝くじ倍率 統計")
+    st.dataframe(pd.DataFrame([{
+        "神に祈る選択回数": result["neet_pray_selected"],
+        "神に祈る成功回数": result["neet_pray_success"],
+        "通常ニートによる宝くじ倍率発動回数": result["normal_neet_lottery_multiplier_activations"],
+        "上級ニートによる宝くじ倍率発動回数": result["advanced_neet_lottery_multiplier_activations"],
+        "倍率あり宝くじ挑戦回数": result["boosted_lottery_attempts"],
+        "倍率あり宝くじ当選回数": result["boosted_lottery_wins"],
+        "倍率なし宝くじ当選率": result["unboosted_lottery_win_rate"],
+        "倍率あり宝くじ当選率": result["boosted_lottery_win_rate"],
+    }]), use_container_width=True)
 
 
 def render_ai_mode_comparison(config: SimulationConfig) -> None:
