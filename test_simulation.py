@@ -1,9 +1,23 @@
 from __future__ import annotations
 
+import json
 import random
+import shutil
+import tempfile
 import unittest
+from pathlib import Path
 
 from config import CARD_HAND_SWAP, CARD_LOTTERY, CARD_ORDER_SWAP, CARD_PROMOTION, CARD_SLEEP, CARD_WALK, DEFAULT_REST_EVENTS
+from config_io import (
+    CONFIG_FILENAME,
+    config_path,
+    config_to_dict,
+    dict_to_config,
+    load_config,
+    load_config_from_json,
+    load_default_config_from_excel,
+    save_config_to_json,
+)
 from models import Action, CardState, Job, Player, SimulationConfig
 from simulation import (
     AI_MODE_COMPLETION,
@@ -317,6 +331,113 @@ class RestCardSystemTests(unittest.TestCase):
         _rebuild_deck(cards, random.Random(1), stats)
 
         self.assertEqual(_total_cards(cards), total)
+
+
+class JsonConfigIoTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.project_dir = Path(__file__).parent
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.base_dir = Path(self.temp_dir.name)
+        shutil.copy2(self.project_dir / "Team2_確率 (1).xlsx", self.base_dir / "Team2_確率 (1).xlsx")
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_json_missing_loads_excel_and_creates_json(self) -> None:
+        config, source, warnings = load_config(self.base_dir)
+
+        self.assertEqual(source, "excel_initialized")
+        self.assertTrue(config_path(self.base_dir).exists())
+        self.assertTrue(config.jobs)
+        self.assertIsInstance(warnings, list)
+
+    def test_existing_json_is_preferred_without_excel(self) -> None:
+        config, _warnings = load_default_config_from_excel(self.base_dir)
+        config.max_turns = 22
+        save_config_to_json(config, config_path(self.base_dir))
+        (self.base_dir / "Team2_確率 (1).xlsx").rename(self.base_dir / "unused.xlsx")
+
+        loaded, source, warnings = load_config(self.base_dir)
+
+        self.assertEqual(source, "json")
+        self.assertEqual(loaded.max_turns, 22)
+        self.assertEqual(warnings, [])
+
+    def test_modified_config_round_trips_through_json(self) -> None:
+        config, _warnings = load_default_config_from_excel(self.base_dir)
+        config.max_turns = 31
+        config.build_success_rate = 0.75
+        save_config_to_json(config, config_path(self.base_dir))
+
+        loaded = load_config_from_json(config_path(self.base_dir))
+
+        self.assertEqual(loaded.max_turns, 31)
+        self.assertEqual(loaded.build_success_rate, 0.75)
+
+    def test_card_counts_round_trip_through_json(self) -> None:
+        config, _warnings = load_default_config_from_excel(self.base_dir)
+        config.card_counts[CARD_LOTTERY] = 123
+        save_config_to_json(config, config_path(self.base_dir))
+
+        loaded = load_config_from_json(config_path(self.base_dir))
+
+        self.assertEqual(loaded.card_counts[CARD_LOTTERY], 123)
+
+    def test_job_parameters_round_trip_through_json(self) -> None:
+        config, _warnings = load_default_config_from_excel(self.base_dir)
+        job = next(iter(config.jobs.values()))
+        action = job.normal_actions[0]
+        action.success_rate = 0.42
+        action.amount = 98765
+        save_config_to_json(config, config_path(self.base_dir))
+
+        loaded = load_config_from_json(config_path(self.base_dir))
+        loaded_action = loaded.jobs[job.name].normal_actions[0]
+
+        self.assertEqual(loaded_action.success_rate, 0.42)
+        self.assertEqual(loaded_action.amount, 98765)
+
+    def test_broken_json_falls_back_to_excel_without_overwriting_json(self) -> None:
+        path = config_path(self.base_dir)
+        path.write_text("{broken", encoding="utf-8")
+
+        config, source, warnings = load_config(self.base_dir)
+
+        self.assertEqual(source, "excel_fallback")
+        self.assertTrue(config.jobs)
+        self.assertIn("{broken", path.read_text(encoding="utf-8"))
+        self.assertTrue(any(CONFIG_FILENAME in warning for warning in warnings))
+
+    def test_missing_new_field_is_filled_from_default(self) -> None:
+        config, _warnings = load_default_config_from_excel(self.base_dir)
+        data = config_to_dict(config)
+        del data["ai"]["rollout_count"]
+
+        loaded = dict_to_config(data, config)
+
+        self.assertEqual(loaded.rollout_count, config.rollout_count)
+
+    def test_unknown_field_is_ignored(self) -> None:
+        config, _warnings = load_default_config_from_excel(self.base_dir)
+        data = config_to_dict(config)
+        data["unknown"] = {"future": True}
+        data["game"]["future_field"] = 999
+
+        loaded = dict_to_config(data, config)
+
+        self.assertEqual(loaded.max_turns, config.max_turns)
+
+    def test_default_restore_does_not_overwrite_json_until_save(self) -> None:
+        config, _warnings = load_default_config_from_excel(self.base_dir)
+        config.max_turns = 44
+        save_config_to_json(config, config_path(self.base_dir))
+        before = config_path(self.base_dir).read_text(encoding="utf-8")
+
+        default_config, _warnings = load_default_config_from_excel(self.base_dir)
+        after = config_path(self.base_dir).read_text(encoding="utf-8")
+
+        self.assertNotEqual(default_config.max_turns, 44)
+        self.assertEqual(before, after)
 
 
 if __name__ == "__main__":

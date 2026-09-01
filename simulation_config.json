@@ -1,0 +1,448 @@
+{
+  "game": {
+    "trials": 10000,
+    "max_turns": 15,
+    "player_jobs": [
+      "ニート",
+      "大工",
+      "商人",
+      "騎士"
+    ],
+    "initial_stamina": 10,
+    "base_max_stamina": 10,
+    "knight_stamina_bonus": 1,
+    "seed": null
+  },
+  "castle": {
+    "costs": [
+      100000,
+      200000,
+      300000,
+      400000,
+      500000
+    ],
+    "base_build_success_rate": 0.5,
+    "build_failure_loss_rate": 0.5,
+    "normal_guard_build_bonus": 0.16666666666666666,
+    "advanced_guard_build_bonus": 0.3333333333333333
+  },
+  "rest": {
+    "lottery": {
+      "name": "宝くじ",
+      "success_rate": 0.16666666666666666,
+      "amount": 300000
+    },
+    "walk": {
+      "name": "散歩",
+      "success_rate": 0.5,
+      "amount": 10000
+    },
+    "sleep": {
+      "name": "ドカ寝",
+      "recovery": 2
+    },
+    "promotion": {
+      "name": "昇格",
+      "unlock_turn": 6,
+      "success_rate": 0.3333333333333333
+    }
+  },
+  "cards": {
+    "initial_hand_size": 2,
+    "mulligan_enabled": true,
+    "counts": {
+      "lottery": 10,
+      "promotion": 10,
+      "walk": 15,
+      "sleep": 15,
+      "order_swap": 10,
+      "hand_swap": 10
+    }
+  },
+  "jobs": {
+    "ニート": {
+      "name": "ニート",
+      "passive": {},
+      "normal_actions": [
+        {
+          "job": "ニート",
+          "name": "神に祈る(通常)",
+          "tier": "normal",
+          "success_rate": 0.05555555555555555,
+          "stamina_cost": 2,
+          "amount": 0,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "",
+          "notes": "金額/効果が空のため収入0として扱います。"
+        },
+        {
+          "job": "ニート",
+          "name": "バイト(通常)",
+          "tier": "normal",
+          "success_rate": 0.5,
+          "stamina_cost": 6,
+          "amount": 6000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "",
+          "notes": "金額/効果が空のため収入0として扱います。"
+        },
+        {
+          "job": "ニート",
+          "name": "お手伝い(通常)",
+          "tier": "normal",
+          "success_rate": 0.6666666666666666,
+          "stamina_cost": 6,
+          "amount": 0,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "",
+          "notes": "金額/効果が空のため収入0として扱います。"
+        }
+      ],
+      "advanced_actions": [
+        {
+          "job": "ニート",
+          "name": "神に祈る(上級)",
+          "tier": "advanced",
+          "success_rate": 0.16666666666666666,
+          "stamina_cost": 2,
+          "amount": 0,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "",
+          "notes": "金額/効果が空のため収入0として扱います。"
+        },
+        {
+          "job": "ニート",
+          "name": "親のすねをかじる(上級)",
+          "tier": "advanced",
+          "success_rate": 0.5,
+          "stamina_cost": 2,
+          "amount": 20000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "",
+          "notes": "金額/効果が空のため収入0として扱います。"
+        },
+        {
+          "job": "ニート",
+          "name": "お手伝い(上級)",
+          "tier": "advanced",
+          "success_rate": 0.6666666666666666,
+          "stamina_cost": 6,
+          "amount": 0,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "",
+          "notes": "金額/効果が空のため収入0として扱います。"
+        }
+      ]
+    },
+    "大工": {
+      "name": "大工",
+      "passive": {},
+      "normal_actions": [
+        {
+          "job": "大工",
+          "name": "模型を売る",
+          "tier": "normal",
+          "success_rate": 0.5,
+          "stamina_cost": 1,
+          "amount": 10000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "10000",
+          "notes": ""
+        },
+        {
+          "job": "大工",
+          "name": "建築費を半分に",
+          "tier": "normal",
+          "success_rate": 0.16666666666666666,
+          "stamina_cost": 4,
+          "amount": 0,
+          "multiplier": 0.5,
+          "effect_type": "build_cost_multiplier",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "指定された建築費を半分にシテイケンチクヒハンブン",
+          "notes": ""
+        },
+        {
+          "job": "大工",
+          "name": "指定回復",
+          "tier": "normal",
+          "success_rate": 0.5,
+          "stamina_cost": 2,
+          "amount": 1,
+          "multiplier": null,
+          "effect_type": "stamina_recovery",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "体力回復1タイリョクカイフク",
+          "notes": ""
+        }
+      ],
+      "advanced_actions": [
+        {
+          "job": "大工",
+          "name": "現場監督（上級）",
+          "tier": "advanced",
+          "success_rate": 0.5,
+          "stamina_cost": 3,
+          "amount": 50000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "50000",
+          "notes": ""
+        },
+        {
+          "job": "大工",
+          "name": "建築費を半分に（上級）",
+          "tier": "advanced",
+          "success_rate": 0.3333333333333333,
+          "stamina_cost": 4,
+          "amount": 0,
+          "multiplier": 0.5,
+          "effect_type": "build_cost_multiplier",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "指定された建築費を半分に",
+          "notes": ""
+        },
+        {
+          "job": "大工",
+          "name": "指定回復(上級)",
+          "tier": "advanced",
+          "success_rate": 0.5,
+          "stamina_cost": 2,
+          "amount": 2,
+          "multiplier": null,
+          "effect_type": "stamina_recovery",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "体力回復2タイリョクカイフク",
+          "notes": ""
+        }
+      ]
+    },
+    "商人": {
+      "name": "商人",
+      "passive": {},
+      "normal_actions": [
+        {
+          "job": "商人",
+          "name": "所持金1.5倍(通常)",
+          "tier": "normal",
+          "success_rate": 0.1666666667,
+          "stamina_cost": 3,
+          "amount": 0,
+          "multiplier": 1.5,
+          "effect_type": "multiplier",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "所持金1.5倍ショジキンバイ",
+          "notes": ""
+        },
+        {
+          "job": "商人",
+          "name": "所持金1.25倍(通常)",
+          "tier": "normal",
+          "success_rate": 0.5,
+          "stamina_cost": 2,
+          "amount": 0,
+          "multiplier": 1.25,
+          "effect_type": "multiplier",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "所持金1.25倍",
+          "notes": ""
+        },
+        {
+          "job": "商人",
+          "name": "投資(通常)",
+          "tier": "normal",
+          "success_rate": 0.3333333333,
+          "stamina_cost": 5,
+          "amount": 0,
+          "multiplier": null,
+          "effect_type": "delayed_investment",
+          "delay_turns": 2,
+          "delay_multiplier": 3.0,
+          "raw_effect": "所持金の半分を失い、2ターン後に3倍になって帰ってくるハンブンウシナゴバイカエ",
+          "notes": ""
+        }
+      ],
+      "advanced_actions": [
+        {
+          "job": "商人",
+          "name": "所持金1.5倍(上級)",
+          "tier": "advanced",
+          "success_rate": 0.3333333333,
+          "stamina_cost": 3,
+          "amount": 0,
+          "multiplier": 1.5,
+          "effect_type": "multiplier",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "所持金1.25倍",
+          "notes": "行動名は1.5倍ですが効果欄は1.25倍です。効果欄の倍率を初期値にします。"
+        },
+        {
+          "job": "商人",
+          "name": "所持金1.25倍(上級)",
+          "tier": "advanced",
+          "success_rate": 0.6666666667,
+          "stamina_cost": 2,
+          "amount": 0,
+          "multiplier": 1.25,
+          "effect_type": "multiplier",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "所持金1.25倍",
+          "notes": ""
+        },
+        {
+          "job": "商人",
+          "name": "投資(上級)",
+          "tier": "advanced",
+          "success_rate": 0.5,
+          "stamina_cost": 5,
+          "amount": 0,
+          "multiplier": null,
+          "effect_type": "delayed_investment",
+          "delay_turns": 2,
+          "delay_multiplier": 3.0,
+          "raw_effect": "所持金の半分を失い、2ターン後に3倍になって帰ってくる",
+          "notes": ""
+        }
+      ]
+    },
+    "騎士": {
+      "name": "騎士",
+      "passive": {
+        "max_stamina_bonus_per_player": true
+      },
+      "normal_actions": [
+        {
+          "job": "騎士",
+          "name": "討伐(通常)",
+          "tier": "normal",
+          "success_rate": 0.3333333333333333,
+          "stamina_cost": 3,
+          "amount": 40000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "40000",
+          "notes": ""
+        },
+        {
+          "job": "騎士",
+          "name": "護衛(通常)",
+          "tier": "normal",
+          "success_rate": 0.5,
+          "stamina_cost": 2,
+          "amount": 30000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "30000",
+          "notes": ""
+        },
+        {
+          "job": "騎士",
+          "name": "見回り(通常)",
+          "tier": "normal",
+          "success_rate": 0.6666666666666666,
+          "stamina_cost": 1,
+          "amount": 20000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "20000",
+          "notes": ""
+        }
+      ],
+      "advanced_actions": [
+        {
+          "job": "騎士",
+          "name": "討伐(上級)",
+          "tier": "advanced",
+          "success_rate": 0.3333333333333333,
+          "stamina_cost": 3,
+          "amount": 50000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "50000",
+          "notes": ""
+        },
+        {
+          "job": "騎士",
+          "name": "護衛(上級)",
+          "tier": "advanced",
+          "success_rate": 0.5,
+          "stamina_cost": 2,
+          "amount": 40000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "40000",
+          "notes": ""
+        },
+        {
+          "job": "騎士",
+          "name": "見回り(上級)",
+          "tier": "advanced",
+          "success_rate": 0.6666666666666666,
+          "stamina_cost": 1,
+          "amount": 30000,
+          "multiplier": null,
+          "effect_type": "income",
+          "delay_turns": 0,
+          "delay_multiplier": 1.0,
+          "raw_effect": "30000",
+          "notes": ""
+        }
+      ]
+    }
+  },
+  "passives": {
+    "normal_carpenter_build_discount": 20000,
+    "advanced_carpenter_build_discount": 50000,
+    "carpenter_build_cost_multiplier": 0.5,
+    "normal_merchant_turn_income": 5000,
+    "advanced_merchant_turn_income": 10000,
+    "normal_neet_turn_recovery": 1,
+    "normal_neet_pray_lottery_multiplier": 3.0,
+    "advanced_neet_pray_lottery_multiplier": 4.0
+  },
+  "ai": {
+    "action_ai_mode": "rollout",
+    "rollout_count": 100
+  }
+}
